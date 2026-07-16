@@ -1,0 +1,8 @@
+/.idea/
+/.vscode/
+/.DS_Store
+/coverage.out
+/wikimedia
+/wikimedia.exe
+/dist/
+/tmp/
