@@ -80,6 +80,9 @@ func TestFetchInvalidID(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if client.SPARQL() == nil {
+		t.Fatal("SPARQL client is nil")
+	}
 	_, err = client.Fetch(context.Background(), "Q0")
 	if !errors.Is(err, ErrInvalidID) {
 		t.Fatalf("err=%v", err)

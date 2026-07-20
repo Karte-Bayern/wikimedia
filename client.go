@@ -17,6 +17,7 @@ import (
 // Client aggregates Wikidata, Commons, and Wikipedia.
 type Client struct {
 	wikidata  *wikidata.Client
+	sparql    *wikidata.SPARQLClient
 	commons   *commons.Client
 	wikipedia *wikipedia.Client
 	languages []string
@@ -45,6 +46,13 @@ func New(options ...Option) (*Client, error) {
 	if err != nil {
 		return nil, fmt.Errorf("wikimedia: create Wikidata client: %w", err)
 	}
+	sp, err := wikidata.NewSPARQLClient(
+		wikidata.WithSPARQLEndpoint(cfg.sparqlEndpoint), wikidata.WithSPARQLHTTPClient(cfg.httpClient),
+		wikidata.WithSPARQLUserAgent(userAgent), wikidata.WithSPARQLMaxResponseBytes(cfg.maxResponseBytes),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("wikimedia: create SPARQL client: %w", err)
+	}
 	cm, err := commons.NewClient(
 		commons.WithEndpoint(cfg.commonsEndpoint), commons.WithHTTPClient(cfg.httpClient),
 		commons.WithUserAgent(userAgent), commons.WithMaxLag(cfg.maxLag),
@@ -63,7 +71,7 @@ func New(options ...Option) (*Client, error) {
 	if err != nil {
 		return nil, fmt.Errorf("wikimedia: create Wikipedia client: %w", err)
 	}
-	return &Client{wikidata: wd, commons: cm, wikipedia: wp, languages: languages, now: time.Now}, nil
+	return &Client{wikidata: wd, sparql: sp, commons: cm, wikipedia: wp, languages: languages, now: time.Now}, nil
 }
 
 // Wikidata returns the low-level Wikidata client used by this aggregate client.
@@ -72,6 +80,14 @@ func (c *Client) Wikidata() *wikidata.Client {
 		return nil
 	}
 	return c.wikidata
+}
+
+// SPARQL returns the bounded Wikidata Query Service client used by this aggregate client.
+func (c *Client) SPARQL() *wikidata.SPARQLClient {
+	if c == nil {
+		return nil
+	}
+	return c.sparql
 }
 
 // Commons returns the low-level Commons client used by this aggregate client.

@@ -20,6 +20,7 @@ type config struct {
 	languages                 []string
 	httpClient                mediawiki.HTTPDoer
 	wikidataEndpoint          string
+	sparqlEndpoint            string
 	commonsEndpoint           string
 	wikipediaEndpointTemplate string
 	maxLag                    int
@@ -32,6 +33,7 @@ type config struct {
 func defaultConfig() config {
 	return config{
 		languages: []string{"en"}, wikidataEndpoint: "https://www.wikidata.org/w/api.php",
+		sparqlEndpoint:            "https://query.wikidata.org/sparql",
 		commonsEndpoint:           "https://commons.wikimedia.org/w/api.php",
 		wikipediaEndpointTemplate: "https://%s.wikipedia.org/w/api.php",
 		maxLag:                    5, maxResponseBytes: 64 << 20,
@@ -71,6 +73,9 @@ func WithHTTPDoer(value mediawiki.HTTPDoer) Option {
 
 // WithWikidataEndpoint overrides the Wikidata Action API endpoint.
 func WithWikidataEndpoint(value string) Option { return func(c *config) { c.wikidataEndpoint = value } }
+
+// WithSPARQLEndpoint overrides the Wikidata Query Service endpoint.
+func WithSPARQLEndpoint(value string) Option { return func(c *config) { c.sparqlEndpoint = value } }
 
 // WithCommonsEndpoint overrides the Commons Action API endpoint.
 func WithCommonsEndpoint(value string) Option { return func(c *config) { c.commonsEndpoint = value } }

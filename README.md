@@ -124,6 +124,26 @@ cmd/wikimedia      command-line client
 
 The project deliberately contains no Karte.Bayern-specific POI, OSM, database, queue, image-proxy, or frontend type.
 
+## SPARQL
+
+For graph-shaped or multi-item queries, use the bounded Wikidata Query Service
+client exposed by the aggregate client. It sends `POST` requests, requires the
+same descriptive User-Agent, respects contexts, and decodes standard SPARQL
+Results JSON. Keep queries selective and paginated; SPARQL is not intended for
+fuzzy text search or large-scale exports.
+
+```go
+result, err := client.SPARQL().Query(ctx, `
+    SELECT ?item WHERE {
+      ?item wdt:P31 wd:Q515 .
+    }
+    LIMIT 10
+`)
+for _, row := range result.Bindings {
+    fmt.Println(row["item"].Value)
+}
+```
+
 ## Result model
 
 Important fields include:
