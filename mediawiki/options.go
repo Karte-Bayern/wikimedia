@@ -67,7 +67,8 @@ func WithMaxResponseBytes(value int64) Option {
 // WithRetryPolicy configures bounded retries.
 func WithRetryPolicy(value RetryPolicy) Option { return func(c *config) { c.retry = value } }
 
-// WithCache enables successful-response caching.
+// WithCache enables successful-response caching. A non-positive TTL keeps
+// entries until the cache implementation evicts them.
 func WithCache(cache Cache, ttl time.Duration) Option {
 	return func(c *config) { c.cache, c.cacheTTL = cache, ttl }
 }

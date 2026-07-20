@@ -73,6 +73,26 @@ func main() {
 
 `Q82425` is the Wikidata item for the Brandenburg Gate. The previously discussed example `Q82489` is a different item; the package accepts any valid non-zero `Q` item ID.
 
+## Resolve OSM and Wikipedia references
+
+In addition to a Wikidata `Q` ID, the aggregate client resolves a Wikipedia
+page or a typed OpenStreetMap object ID to its linked Wikidata item. OSM IDs
+are only unique within their object type:
+
+```go
+fromWikipedia, err := client.FetchByWikipedia(ctx, "de", "Brandenburger Tor")
+fromOSM, err := client.FetchByOSM(ctx, wikimedia.OSMRelation, "62422")
+```
+
+`FetchByOSM` supports `OSMRelation`, `OSMWay`, and `OSMNode`, mapped to the
+Wikidata properties P402, P10689, and P11693 respectively. The CLI exposes
+the same resolution:
+
+```bash
+wikimedia get --wikipedia 'de:Brandenburger Tor'
+wikimedia get --osm relation/62422
+```
+
 By default, `Fetch` loads the Wikidata entity, claims, Commons references, and direct media. Fan-out operations are opt-in:
 
 ```go

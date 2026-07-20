@@ -18,6 +18,16 @@ const (
 	ServiceWikipedia Service = "wikipedia"
 )
 
+// OSMType identifies the OpenStreetMap object type represented by an ID.
+type OSMType string
+
+// OpenStreetMap object types supported by FetchByOSM.
+const (
+	OSMRelation OSMType = "relation"
+	OSMWay      OSMType = "way"
+	OSMNode     OSMType = "node"
+)
+
 // Warning records a recoverable enrichment failure.
 type Warning struct {
 	Service Service `json:"service"`

@@ -86,6 +86,41 @@ func TestFetchInvalidID(t *testing.T) {
 	}
 }
 
+func TestFetchResolvesWikipediaAndOSMReferences(t *testing.T) {
+	server := newFixtureServer(t, false)
+	defer server.Close()
+	client, err := New(
+		WithUserAgent("aggregate-test/1.0 (test@example.org)"),
+		WithWikidataEndpoint(server.URL+"/wd"), WithCommonsEndpoint(server.URL+"/commons"),
+		WithRetryPolicy(mediawiki.RetryPolicy{MaxAttempts: 1}),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, fetch := range map[string]func() (*Result, error){
+		"Wikipedia": func() (*Result, error) {
+			return client.FetchByWikipedia(context.Background(), "de", "Brandenburger Tor", WithMediaLimit(0))
+		},
+		"OSM relation": func() (*Result, error) {
+			return client.FetchByOSM(context.Background(), OSMRelation, "62422", WithMediaLimit(0))
+		},
+		"OSM way": func() (*Result, error) {
+			return client.FetchByOSM(context.Background(), OSMWay, "121590158", WithMediaLimit(0))
+		},
+		"OSM node": func() (*Result, error) {
+			return client.FetchByOSM(context.Background(), OSMNode, "164979149", WithMediaLimit(0))
+		},
+	} {
+		result, err := fetch()
+		if err != nil || result.ID != "Q82425" {
+			t.Fatalf("%s: result=%+v err=%v", name, result, err)
+		}
+	}
+	if _, err := client.FetchByOSM(context.Background(), OSMRelation, "0"); !errors.Is(err, ErrInvalidOSMID) {
+		t.Fatalf("invalid ID error=%v", err)
+	}
+}
+
 func TestRankAndLimitMedia(t *testing.T) {
 	values := []Media{
 		{Title: "File:Logo.svg", Kind: MediaKindLogo, MIMEType: "image/svg+xml", Width: 1000, Height: 1000, Sources: []MediaSource{{BaseScore: 350, MediaKind: MediaKindLogo}}},
@@ -103,6 +138,13 @@ func newFixtureServer(t *testing.T, commonsFailure bool) *httptest.Server {
 		w.Header().Set("Content-Type", "application/json")
 		switch {
 		case r.URL.Path == "/wd":
+			if r.URL.Query().Get("list") == "search" {
+				if got := r.URL.Query().Get("srsearch"); !strings.HasPrefix(got, "haswbstatement:P") {
+					t.Errorf("statement search=%q", got)
+				}
+				_, _ = w.Write([]byte(`{"query":{"search":[{"title":"Q82425"}]}}`))
+				return
+			}
 			_, _ = w.Write([]byte(`{"entities":{"Q82425":{"pageid":42,"id":"Q82425","labels":{"de":{"language":"de","value":"Brandenburger Tor"},"en":{"language":"en","value":"Brandenburg Gate"}},"descriptions":{"de":{"language":"de","value":"Tor in Berlin"}},"aliases":{"de":[{"language":"de","value":"Brandenburg Gate"}]},"claims":{"P18":[{"id":"Q82425$P18","rank":"preferred","mainsnak":{"snaktype":"value","property":"P18","datatype":"commonsMedia","datavalue":{"type":"string","value":"old_gate.jpg"}}},{"id":"deprecated","rank":"deprecated","mainsnak":{"snaktype":"value","property":"P18","datatype":"commonsMedia","datavalue":{"type":"string","value":"Deprecated.jpg"}}}],"P625":[{"id":"coord","rank":"normal","mainsnak":{"snaktype":"value","property":"P625","datatype":"globe-coordinate","datavalue":{"type":"globecoordinate","value":{"latitude":52.5163,"longitude":13.3777,"precision":0.0001,"globe":"http://www.wikidata.org/entity/Q2"}}}}],"P373":[{"id":"category","rank":"normal","mainsnak":{"snaktype":"value","property":"P373","datatype":"string","datavalue":{"type":"string","value":"Brandenburg Gate"}}}],"P856":[{"id":"site","rank":"normal","mainsnak":{"snaktype":"value","property":"P856","datatype":"url","datavalue":{"type":"string","value":"https://example.test/gate"}}}]},"sitelinks":{"dewiki":{"site":"dewiki","title":"Brandenburger Tor","badges":[]},"commonswiki":{"site":"commonswiki","title":"Category:Brandenburg Gate","badges":[]}}}}}`))
 		case r.URL.Path == "/commons":
 			if commonsFailure {

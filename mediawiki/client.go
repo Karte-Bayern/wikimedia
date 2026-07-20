@@ -102,7 +102,10 @@ func (c *Client) Query(ctx context.Context, parameters url.Values, target any) (
 		body, retryAfter, retryable, err := c.queryOnce(ctx, requestURL, target)
 		if err == nil {
 			if c.cache != nil {
-				expires := c.now().Add(c.cacheTTL)
+				expires := time.Time{}
+				if c.cacheTTL > 0 {
+					expires = c.now().Add(c.cacheTTL)
+				}
 				if cacheErr := c.cache.Set(ctx, cacheKey, body, expires); cacheErr != nil {
 					return nil, fmt.Errorf("mediawiki: cache set: %w", cacheErr)
 				}

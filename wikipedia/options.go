@@ -45,7 +45,8 @@ func WithMaxResponseBytes(value int64) Option { return func(c *config) { c.maxRe
 // WithRetryPolicy configures bounded read retries.
 func WithRetryPolicy(value mediawiki.RetryPolicy) Option { return func(c *config) { c.retry = value } }
 
-// WithCache enables successful raw-response caching.
+// WithCache enables successful raw-response caching. A non-positive TTL keeps
+// entries until the cache implementation evicts them.
 func WithCache(value mediawiki.Cache, ttl time.Duration) Option {
 	return func(c *config) { c.cache, c.cacheTTL = value, ttl }
 }

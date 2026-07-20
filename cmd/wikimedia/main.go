@@ -116,17 +116,30 @@ func runGet(parent context.Context, args []string, stdout, stderr io.Writer) int
 	set.SetOutput(stderr)
 	var common commonFlags
 	var fetch fetchFlags
-	var output string
+	var output, osmReference, wikipediaReference string
 	addCommonFlags(set, &common, true, 45*time.Second)
 	addFetchFlags(set, &fetch, true)
 	set.StringVar(&output, "output", "", "write JSON to file instead of stdout")
-	set.Usage = func() { fmt.Fprintln(set.Output(), "usage: wikimedia get [flags] QID"); set.PrintDefaults() }
+	set.StringVar(&osmReference, "osm", "", "resolve OSM TYPE/ID (relation, way, or node)")
+	set.StringVar(&wikipediaReference, "wikipedia", "", "resolve Wikipedia LANGUAGE:TITLE")
+	set.Usage = func() {
+		fmt.Fprintln(set.Output(), "usage: wikimedia get [flags] QID | --osm TYPE/ID | --wikipedia LANGUAGE:TITLE")
+		set.PrintDefaults()
+	}
 	if err := set.Parse(args); err != nil {
 		return flagExitCode(err)
 	}
-	id, ok := requireOneID(set, stderr)
-	if !ok {
+	if (osmReference != "" || wikipediaReference != "") && (osmReference != "" && wikipediaReference != "" || set.NArg() != 0) {
+		fmt.Fprintln(stderr, "use exactly one of QID, --osm, or --wikipedia")
 		return 2
+	}
+	id := ""
+	if osmReference == "" && wikipediaReference == "" {
+		var ok bool
+		id, ok = requireOneID(set, stderr)
+		if !ok {
+			return 2
+		}
 	}
 	ctx, cancel := commandContext(parent, common.timeout)
 	defer cancel()
@@ -134,7 +147,7 @@ func runGet(parent context.Context, args []string, stdout, stderr io.Writer) int
 	if err != nil {
 		return printError(stderr, err)
 	}
-	result, err := client.Fetch(ctx, id, fetch.options()...)
+	result, err := fetchByReference(ctx, client, id, osmReference, wikipediaReference, fetch.options())
 	if err != nil {
 		return printError(stderr, err)
 	}
@@ -142,6 +155,24 @@ func runGet(parent context.Context, args []string, stdout, stderr io.Writer) int
 		return printError(stderr, err)
 	}
 	return 0
+}
+
+func fetchByReference(ctx context.Context, client *wikimedia.Client, id, osmReference, wikipediaReference string, options []wikimedia.FetchOption) (*wikimedia.Result, error) {
+	if osmReference != "" {
+		kind, value, ok := strings.Cut(strings.TrimSpace(osmReference), "/")
+		if !ok || value == "" {
+			return nil, fmt.Errorf("OSM reference must be TYPE/ID")
+		}
+		return client.FetchByOSM(ctx, wikimedia.OSMType(strings.ToLower(kind)), value, options...)
+	}
+	if wikipediaReference != "" {
+		language, title, ok := strings.Cut(strings.TrimSpace(wikipediaReference), ":")
+		if !ok || title == "" {
+			return nil, fmt.Errorf("Wikipedia reference must be LANGUAGE:TITLE")
+		}
+		return client.FetchByWikipedia(ctx, language, title, options...)
+	}
+	return client.Fetch(ctx, id, options...)
 }
 
 func runMedia(parent context.Context, args []string, stdout, stderr io.Writer) int {

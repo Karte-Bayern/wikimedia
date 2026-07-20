@@ -13,8 +13,9 @@ import (
 )
 
 type testCache struct {
-	mu     sync.Mutex
-	values map[string][]byte
+	mu        sync.Mutex
+	values    map[string][]byte
+	expiresAt time.Time
 }
 
 func (c *testCache) Get(_ context.Context, key string) ([]byte, bool, error) {
@@ -23,14 +24,33 @@ func (c *testCache) Get(_ context.Context, key string) ([]byte, bool, error) {
 	v, ok := c.values[key]
 	return append([]byte(nil), v...), ok, nil
 }
-func (c *testCache) Set(_ context.Context, key string, value []byte, _ time.Time) error {
+func (c *testCache) Set(_ context.Context, key string, value []byte, expiresAt time.Time) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.values == nil {
 		c.values = map[string][]byte{}
 	}
 	c.values[key] = append([]byte(nil), value...)
+	c.expiresAt = expiresAt
 	return nil
+}
+
+func TestQueryCacheWithoutTTLDoesNotExpire(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	defer server.Close()
+	storage := &testCache{values: map[string][]byte{}}
+	client, err := NewClient(server.URL, WithUserAgent("cache-test/1.0 (test@example.org)"), WithCache(storage, 0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.Query(context.Background(), url.Values{"action": {"query"}}, &struct{}{}); err != nil {
+		t.Fatal(err)
+	}
+	if !storage.expiresAt.IsZero() {
+		t.Fatalf("expiresAt=%v, want zero time for an unbounded cache entry", storage.expiresAt)
+	}
 }
 func (c *testCache) Delete(_ context.Context, key string) error {
 	c.mu.Lock()

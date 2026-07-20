@@ -13,7 +13,10 @@ import (
 	"github.com/karte-bayern/wikimedia/mediawiki"
 )
 
-var itemIDPattern = regexp.MustCompile(`^Q[1-9][0-9]*$`)
+var (
+	itemIDPattern     = regexp.MustCompile(`^Q[1-9][0-9]*$`)
+	propertyIDPattern = regexp.MustCompile(`^P[1-9][0-9]*$`)
+)
 
 // Client reads Wikidata entities through wbgetentities.
 type Client struct {
@@ -55,6 +58,11 @@ func NewClient(options ...Option) (*Client, error) {
 // ValidItemID reports whether value is a non-zero Wikidata Q ID.
 func ValidItemID(value string) bool { return itemIDPattern.MatchString(strings.TrimSpace(value)) }
 
+// ValidPropertyID reports whether value is a non-zero Wikidata property ID.
+func ValidPropertyID(value string) bool {
+	return propertyIDPattern.MatchString(strings.TrimSpace(value))
+}
+
 // GetEntity fetches one item.
 func (c *Client) GetEntity(ctx context.Context, id string) (*Entity, error) {
 	id = strings.TrimSpace(id)
@@ -68,6 +76,68 @@ func (c *Client) GetEntity(ctx context.Context, id string) (*Entity, error) {
 	}
 	copy := entity
 	return &copy, nil
+}
+
+// GetEntityBySitelink resolves a page title on a Wikimedia site (for example,
+// "dewiki") to its linked Wikidata item.
+func (c *Client) GetEntityBySitelink(ctx context.Context, site, title string) (*Entity, error) {
+	if c == nil || c.api == nil {
+		return nil, errors.New("wikidata: nil client")
+	}
+	site, title = strings.TrimSpace(site), strings.TrimSpace(title)
+	if site == "" || title == "" {
+		return nil, fmt.Errorf("%w: empty site or title", ErrNotFound)
+	}
+	parameters := url.Values{
+		"action": {"wbgetentities"}, "sites": {site}, "titles": {title},
+		"props":     {"labels|descriptions|aliases|claims|sitelinks"},
+		"languages": {strings.Join(c.languages, "|")}, "languagefallback": {"1"}, "redirects": {"yes"},
+	}
+	entities, err := c.queryEntities(ctx, parameters)
+	if err != nil {
+		return nil, err
+	}
+	for _, entity := range entities {
+		if !entity.Missing {
+			copy := entity
+			return &copy, nil
+		}
+	}
+	return nil, fmt.Errorf("%w: %s:%s", ErrNotFound, site, title)
+}
+
+// GetEntityByStatement resolves an exact external-ID statement to one item.
+// It uses WikibaseCirrusSearch's haswbstatement query and returns its first
+// matching item.
+func (c *Client) GetEntityByStatement(ctx context.Context, property, value string) (*Entity, error) {
+	if c == nil || c.api == nil {
+		return nil, errors.New("wikidata: nil client")
+	}
+	property, value = strings.ToUpper(strings.TrimSpace(property)), strings.TrimSpace(value)
+	if !ValidPropertyID(property) {
+		return nil, fmt.Errorf("%w: %q", ErrInvalidProperty, property)
+	}
+	if value == "" || strings.ContainsAny(value, "\r\n") {
+		return nil, fmt.Errorf("%w: empty statement value", ErrNotFound)
+	}
+	parameters := url.Values{
+		"action": {"query"}, "list": {"search"}, "srnamespace": {"0"}, "srlimit": {"1"},
+		"srsearch": {"haswbstatement:" + property + "=" + value},
+	}
+	var envelope struct {
+		Query struct {
+			Search []struct {
+				Title string `json:"title"`
+			} `json:"search"`
+		} `json:"query"`
+	}
+	if _, err := c.api.Query(ctx, parameters, &envelope); err != nil {
+		return nil, err
+	}
+	if len(envelope.Query.Search) == 0 || !ValidItemID(envelope.Query.Search[0].Title) {
+		return nil, fmt.Errorf("%w: %s=%s", ErrNotFound, property, value)
+	}
+	return c.GetEntity(ctx, envelope.Query.Search[0].Title)
 }
 
 // GetEntities fetches items in anonymous-safe batches of at most 50 IDs.
@@ -112,6 +182,10 @@ func (c *Client) getBatch(ctx context.Context, ids []string) (map[string]Entity,
 		"languages": {strings.Join(c.languages, "|")}, "languagefallback": {"1"},
 		"redirects": {"yes"},
 	}
+	return c.queryEntities(ctx, parameters)
+}
+
+func (c *Client) queryEntities(ctx context.Context, parameters url.Values) (map[string]Entity, error) {
 	var envelope struct {
 		Entities map[string]json.RawMessage `json:"entities"`
 	}

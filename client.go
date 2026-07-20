@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"regexp"
 	"strings"
 	"time"
 
@@ -89,11 +90,71 @@ func (c *Client) Wikipedia() *wikipedia.Client {
 	return c.wikipedia
 }
 
+var (
+	osmIDPattern               = regexp.MustCompile(`^[1-9][0-9]{0,9}$`)
+	wikipediaLanguageIDPattern = regexp.MustCompile(`^[a-z][a-z0-9-]{0,19}$`)
+)
+
+// FetchByWikipedia resolves a Wikipedia page title to its Wikidata item and
+// returns the same normalized result as Fetch. Language is a Wikipedia
+// language code such as "de" or "en".
+func (c *Client) FetchByWikipedia(ctx context.Context, language, title string, options ...FetchOption) (*Result, error) {
+	if c == nil || c.wikidata == nil {
+		return nil, errors.New("wikimedia: nil client")
+	}
+	language = strings.ToLower(strings.TrimSpace(language))
+	if !wikipediaLanguageIDPattern.MatchString(language) {
+		return nil, fmt.Errorf("wikimedia: invalid Wikipedia language %q", language)
+	}
+	entity, err := c.wikidata.GetEntityBySitelink(ctx, language+"wiki", title)
+	if err != nil {
+		return nil, err
+	}
+	return c.fetchEntity(ctx, entity, newFetchConfig(options))
+}
+
+// FetchByOSM resolves an OpenStreetMap relation, way, or node ID through its
+// corresponding Wikidata external-ID statement, then returns a normalized
+// result. OSM IDs are not globally unique across object types.
+func (c *Client) FetchByOSM(ctx context.Context, objectType OSMType, id string, options ...FetchOption) (*Result, error) {
+	if c == nil || c.wikidata == nil {
+		return nil, errors.New("wikimedia: nil client")
+	}
+	id = strings.TrimSpace(id)
+	if !osmIDPattern.MatchString(id) {
+		return nil, fmt.Errorf("%w: %q", ErrInvalidOSMID, id)
+	}
+	property := ""
+	switch objectType {
+	case OSMRelation:
+		property = "P402"
+	case OSMWay:
+		property = "P10689"
+	case OSMNode:
+		property = "P11693"
+	default:
+		return nil, fmt.Errorf("%w: type %q", ErrInvalidOSMID, objectType)
+	}
+	entity, err := c.wikidata.GetEntityByStatement(ctx, property, id)
+	if err != nil {
+		return nil, err
+	}
+	return c.fetchEntity(ctx, entity, newFetchConfig(options))
+}
+
 // Fetch enriches one Wikidata item.
 func (c *Client) Fetch(ctx context.Context, id string, options ...FetchOption) (*Result, error) {
 	if c == nil || c.wikidata == nil {
 		return nil, errors.New("wikimedia: nil client")
 	}
+	entity, err := c.wikidata.GetEntity(ctx, strings.TrimSpace(id))
+	if err != nil {
+		return nil, err
+	}
+	return c.fetchEntity(ctx, entity, newFetchConfig(options))
+}
+
+func newFetchConfig(options []FetchOption) fetchConfig {
 	cfg := defaultFetchConfig()
 	for _, option := range options {
 		if option != nil {
@@ -101,10 +162,10 @@ func (c *Client) Fetch(ctx context.Context, id string, options ...FetchOption) (
 		}
 	}
 	normalizeFetchConfig(&cfg)
-	entity, err := c.wikidata.GetEntity(ctx, strings.TrimSpace(id))
-	if err != nil {
-		return nil, err
-	}
+	return cfg
+}
+
+func (c *Client) fetchEntity(ctx context.Context, entity *wikidata.Entity, cfg fetchConfig) (*Result, error) {
 	result := normalizeEntity(entity, c.languages, cfg)
 	result.FetchedAt = c.now().UTC()
 
