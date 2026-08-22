@@ -107,3 +107,40 @@ func TestGetEntityTrimsIDAndPreservesRedirectInformation(t *testing.T) {
 		t.Fatalf("entity=%+v", entity)
 	}
 }
+
+func TestSearchItemsUsesWikibaseSearchAndFiltersResults(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		query := r.URL.Query()
+		if got := query.Get("action"); got != "wbsearchentities" {
+			t.Errorf("action=%q", got)
+		}
+		if got := query.Get("search"); got != "Brandenburg Gate" {
+			t.Errorf("search=%q", got)
+		}
+		if got := query.Get("type"); got != "item" {
+			t.Errorf("type=%q", got)
+		}
+		if got := query.Get("language"); got != "de" {
+			t.Errorf("language=%q", got)
+		}
+		if got := query.Get("limit"); got != "50" {
+			t.Errorf("limit=%q", got)
+		}
+		_, _ = w.Write([]byte(`{"search":[{"id":"Q82425","label":"Brandenburger Tor","description":"Tor in Berlin","aliases":["Brandenburg Gate"],"concepturi":"https://www.wikidata.org/wiki/Q82425","match":{"text":"Brandenburg Gate"}},{"id":"P18","label":"image"}]}`))
+	}))
+	defer server.Close()
+	client, err := NewClient(WithEndpoint(server.URL), WithUserAgent("wd-search/1.0 (test@example.org)"), WithLanguages("de"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	results, err := client.SearchItems(context.Background(), " Brandenburg Gate ", SearchLimit(100))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 1 || results[0].ID != "Q82425" || results[0].Match != "Brandenburg Gate" || len(results[0].Aliases) != 1 {
+		t.Fatalf("results=%+v", results)
+	}
+	if _, err := client.SearchItems(context.Background(), " \n "); !errors.Is(err, ErrInvalidSearch) {
+		t.Fatalf("invalid search error=%v", err)
+	}
+}

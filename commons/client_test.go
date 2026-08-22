@@ -82,6 +82,25 @@ func TestListCategoryFilesAndContinue(t *testing.T) {
 	}
 }
 
+func TestWalkAndCollectCategoryFiles(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("gcmcontinue") == "next" {
+			_, _ = w.Write([]byte(`{"query":{"pages":[{"pageid":2,"ns":6,"title":"File:B.jpg","imageinfo":[{"url":"https://upload.wikimedia.org/B.jpg"}]}]}}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"continue":{"gcmcontinue":"next","continue":"gcmcontinue||"},"query":{"pages":[{"pageid":1,"ns":6,"title":"File:A.jpg","imageinfo":[{"url":"https://upload.wikimedia.org/A.jpg"}]}]}}`))
+	}))
+	defer server.Close()
+	client, err := NewClient(WithEndpoint(server.URL), WithUserAgent("commons-test/1.0 (test@example.org)"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	files, err := client.CollectCategoryFiles(context.Background(), "Example", 2)
+	if err != nil || len(files) != 2 || files[0].Title != "File:A.jpg" || files[1].Title != "File:B.jpg" {
+		t.Fatalf("files=%+v err=%v", files, err)
+	}
+}
+
 func containsTitle(values []string, value string) bool {
 	for _, candidate := range values {
 		if candidate == value {

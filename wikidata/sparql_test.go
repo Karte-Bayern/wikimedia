@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"testing"
 )
 
@@ -38,6 +39,36 @@ func TestSPARQLQueryPostsAndDecodesBindings(t *testing.T) {
 	}
 	if len(result.Variables) != 1 || result.Variables[0] != "item" || result.Bindings[0]["item"].Value != "http://www.wikidata.org/entity/Q64" {
 		t.Fatalf("result=%+v", result)
+	}
+}
+
+func TestSPARQLQueryPages(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseForm(); err != nil {
+			t.Fatal(err)
+		}
+		if r.Form.Get("query") == "OFFSET 0 LIMIT 2" {
+			_, _ = w.Write([]byte(`{"head":{"vars":["item"]},"results":{"bindings":[{"item":{"type":"uri","value":"Q1"}},{"item":{"type":"uri","value":"Q2"}}]}}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"head":{"vars":["item"]},"results":{"bindings":[{"item":{"type":"uri","value":"Q3"}}]}}`))
+	}))
+	defer server.Close()
+	client, err := NewSPARQLClient(WithSPARQLEndpoint(server.URL), WithSPARQLUserAgent("sparql-test/1.0 (test@example.org)"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	err = client.QueryPages(context.Background(), 2, 5, func(offset, limit int) string {
+		return "OFFSET " + strconv.Itoa(offset) + " LIMIT " + strconv.Itoa(limit)
+	}, func(page *SPARQLResult) error {
+		for _, row := range page.Bindings {
+			got = append(got, row["item"].Value)
+		}
+		return nil
+	})
+	if err != nil || len(got) != 3 || got[2] != "Q3" {
+		t.Fatalf("got=%v err=%v", got, err)
 	}
 }
 

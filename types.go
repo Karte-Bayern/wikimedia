@@ -28,6 +28,9 @@ const (
 	OSMNode     OSMType = "node"
 )
 
+// SearchResult is one Wikidata item matched by a full-text search.
+type SearchResult = wikidata.SearchResult
+
 // Warning records a recoverable enrichment failure.
 type Warning struct {
 	Service Service `json:"service"`

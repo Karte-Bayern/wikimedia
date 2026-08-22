@@ -9,6 +9,10 @@ Status: **v0.1.0 / pre-v1 API**. The module has no third-party Go dependencies a
 ## Features
 
 - Fetch one Wikidata `Q` item through `wbgetentities`, including item-redirect information.
+- Resolve Wikidata, Wikipedia, and OpenStreetMap IDs and common page URLs.
+- Resolve Commons file and category titles or URLs without an intervening item.
+- Search Wikidata items by label, alias, or other indexed text.
+- Batch direct Q-ID enrichment while retaining per-reference failures.
 - Preserve claims, qualifiers, references, ranks, and unknown raw data values.
 - Select labels, descriptions, and aliases using an explicit language fallback.
 - Normalize coordinates, sitelinks, official websites, and Commons references.
@@ -22,6 +26,7 @@ Status: **v0.1.0 / pre-v1 API**. The module has no third-party Go dependencies a
 - Respect `maxlag`, HTTP 429 and `Retry-After`, bounded retries, contexts, and response-size limits.
 - Cache raw API responses in memory, on a filesystem, or through an application-provided cache.
 - Download media atomically with URL restrictions, byte limits, safe names, and MediaWiki base-36 SHA-1 verification.
+- Download media batches concurrently with duplicate detection, progress events, and resumable manifests.
 - Use the same public API through the included CLI.
 
 ## Installation
@@ -89,8 +94,68 @@ Wikidata properties P402, P10689, and P11693 respectively. The CLI exposes
 the same resolution:
 
 ```bash
-wikimedia get --wikipedia 'de:Brandenburger Tor'
+wikimedia get --wiki 'de:Brandenburger Tor'
 wikimedia get --osm relation/62422
+```
+
+Any `get`, `media`, or `download` positional argument can instead be a
+Wikidata, Wikipedia, or OpenStreetMap URL. Compact references are also useful
+in configuration files and scripts:
+
+```bash
+wikimedia get https://de.wikipedia.org/wiki/Brandenburger_Tor
+wikimedia media https://www.openstreetmap.org/relation/62422
+wikimedia get wikidata:Q82425
+wikimedia get https://commons.wikimedia.org/wiki/File:Brandenburger_Tor_morgens.jpg
+wikimedia media 'Category:Brandenburg Gate'
+```
+
+## Batch enrichment and output formats
+
+`FetchMany` preserves input order, batches direct Q IDs, and keeps each
+failure alongside successful results:
+
+```go
+items, err := client.FetchMany(ctx, []string{
+    "Q64",
+    "https://de.wikipedia.org/wiki/Brandenburger_Tor",
+    "relation/62422",
+})
+for _, item := range items {
+    if item.Err != nil {
+        log.Printf("%s: %v", item.Reference, item.Err)
+        continue
+    }
+    fmt.Println(item.Result.ID, item.Result.Label)
+}
+```
+
+The CLI accepts multiple references with `get`; `json`, `jsonl`, and
+tab-friendly `text` output are available on data commands. Common flags have
+short aliases, such as `-l` for `--languages`, `-t` for `--timeout`, and `-o`
+for `--output`.
+
+```bash
+wikimedia get --format jsonl Q64 Q90 relation/62422
+wikimedia search -l en -F text 'Brandenburg Gate'
+```
+
+## Item search
+
+Use full-text search for labels and aliases, then fetch a selected item. It is
+separate from SPARQL, which is intended for structured graph queries.
+
+```go
+matches, err := client.SearchItems(ctx, "Brandenburg Gate",
+    wikidata.SearchLanguage("en"),
+    wikidata.SearchLimit(5),
+)
+```
+
+The CLI emits the same structured results:
+
+```bash
+wikimedia search --language en --limit 5 'Brandenburg Gate'
 ```
 
 By default, `Fetch` loads the Wikidata entity, claims, Commons references, and direct media. Fan-out operations are opt-in:
@@ -143,6 +208,78 @@ for _, row := range result.Bindings {
     fmt.Println(row["item"].Value)
 }
 ```
+
+Run a query directly from the CLI with inline text or a `.rq` file:
+
+```bash
+wikimedia sparql --file nearby-museums.rq
+```
+
+For caller-controlled, safe pagination, provide a query builder that applies
+the supplied `OFFSET` and `LIMIT` values:
+
+```go
+err := client.SPARQL().QueryPages(ctx, 100, 10,
+    func(offset, limit int) string {
+        return fmt.Sprintf("SELECT ?item WHERE { ?item wdt:P31 wd:Q515 } LIMIT %d OFFSET %d", limit, offset)
+    },
+    func(page *wikidata.SPARQLResult) error {
+        // process page.Bindings
+        return nil
+    },
+)
+```
+
+## Geographic queries
+
+Use the bounded helpers for nearby or bounding-box lookups. Coordinates are
+WGS84 and distances are kilometres; both helpers limit results to 500 items.
+
+```go
+nearby, err := client.FindNearby(ctx, 52.5163, 13.3777, 2, 25)
+inBox, err := client.FindInBoundingBox(ctx, 52.4, 13.2, 52.6, 13.6, 100)
+```
+
+## Typed convenience accessors
+
+When claims are included (the default), `Result` offers helpers for common
+application fields while retaining the original generic claims:
+
+```go
+inception, ok := result.Inception()          // P571
+sites := result.OfficialWebsites()            // P856
+areas := result.AdministrativeAreas()         // P131
+designations := result.HeritageDesignations() // P1435
+hours := result.OpeningHours()                // P8629
+address := result.Address()                   // P6375, P670, P281, P17
+```
+
+## Pagination and bulk downloads
+
+Commons pagination is available as a bounded callback or a collecting helper:
+
+```go
+files, err := client.Commons().CollectCategoryFiles(
+    ctx, "Category:Brandenburg Gate", 3,
+    commons.CategoryLimit(50),
+)
+```
+
+For many media representations, the downloader limits concurrency, emits
+serialized progress events, skips duplicate URLs, and can resume successful
+items from an atomic manifest:
+
+```go
+batch, err := downloader.DownloadBatch(ctx, sources, "images",
+    download.WithConcurrency(4),
+    download.WithManifest("images/downloads.json"),
+    download.WithResume(true),
+)
+```
+
+The CLI `download` command uses this batch mechanism. `--concurrency` bounds
+parallel downloads and `--resume` reuses the prior `.wikimedia-downloads.json`
+manifest in the entity output directory.
 
 ## Result model
 

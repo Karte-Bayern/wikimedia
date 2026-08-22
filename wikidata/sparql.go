@@ -33,6 +33,14 @@ type SPARQLResult struct {
 	Bindings  []map[string]SPARQLBinding `json:"bindings"`
 }
 
+// SPARQLPageQuery creates a query for the supplied OFFSET and LIMIT values.
+// The returned query must apply both values for QueryPages to be bounded.
+type SPARQLPageQuery func(offset, limit int) string
+
+// SPARQLPageVisitor receives one decoded page. Returning an error stops the
+// iteration and returns that error to the caller.
+type SPARQLPageVisitor func(*SPARQLResult) error
+
 // SPARQLClient queries a SPARQL endpoint and decodes SPARQL Results JSON.
 type SPARQLClient struct {
 	endpoint         string
@@ -150,4 +158,31 @@ func (c *SPARQLClient) Query(ctx context.Context, query string) (*SPARQLResult, 
 		return nil, fmt.Errorf("wikidata: decode SPARQL response: %w", err)
 	}
 	return &SPARQLResult{Variables: envelope.Head.Variables, Bindings: envelope.Results.Bindings}, nil
+}
+
+// QueryPages invokes build for consecutive OFFSET/LIMIT values and stops when
+// the returned page has fewer bindings than pageSize or maxPages is reached.
+// It intentionally does not rewrite arbitrary SPARQL strings, which could
+// invalidate nested queries or existing LIMIT/OFFSET clauses.
+func (c *SPARQLClient) QueryPages(ctx context.Context, pageSize, maxPages int, build SPARQLPageQuery, visit SPARQLPageVisitor) error {
+	if pageSize <= 0 || pageSize > 10000 || maxPages <= 0 {
+		return ErrInvalidQuery
+	}
+	if build == nil || visit == nil {
+		return ErrInvalidQuery
+	}
+	for pageNumber := 0; pageNumber < maxPages; pageNumber++ {
+		query := build(pageNumber*pageSize, pageSize)
+		result, err := c.Query(ctx, query)
+		if err != nil {
+			return err
+		}
+		if err := visit(result); err != nil {
+			return err
+		}
+		if len(result.Bindings) < pageSize {
+			return nil
+		}
+	}
+	return nil
 }

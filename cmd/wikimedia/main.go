@@ -10,12 +10,14 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"time"
 
 	"github.com/karte-bayern/wikimedia"
 	"github.com/karte-bayern/wikimedia/cache"
 	"github.com/karte-bayern/wikimedia/download"
+	"github.com/karte-bayern/wikimedia/wikidata"
 )
 
 const repositoryURL = "https://github.com/Karte-Bayern/wikimedia"
@@ -34,6 +36,10 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		return runMedia(ctx, args[1:], stdout, stderr)
 	case "download":
 		return runDownload(ctx, args[1:], stdout, stderr)
+	case "search":
+		return runSearch(ctx, args[1:], stdout, stderr)
+	case "sparql":
+		return runSPARQL(ctx, args[1:], stdout, stderr)
 	case "version", "--version", "-version":
 		fmt.Fprintf(stdout, "wikimedia %s\n", wikimedia.Version)
 		return 0
@@ -48,9 +54,9 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 }
 
 type commonFlags struct {
-	languages, userAgent, cacheDir string
-	timeout                        time.Duration
-	compact                        bool
+	languages, userAgent, cacheDir, format string
+	timeout                                time.Duration
+	compact                                bool
 }
 type fetchFlags struct {
 	directMedia, categories, wikipedia, claims, raw, deprecated bool
@@ -65,11 +71,17 @@ func defaultApplicationUserAgent() string {
 }
 func addCommonFlags(set *flag.FlagSet, values *commonFlags, compact bool, defaultTimeout time.Duration) {
 	set.StringVar(&values.languages, "languages", "de,en", "preferred language codes, comma-separated")
+	set.StringVar(&values.languages, "l", "de,en", "shorthand for --languages")
 	set.StringVar(&values.userAgent, "user-agent", defaultApplicationUserAgent(), "descriptive User-Agent with contact information")
+	set.StringVar(&values.userAgent, "u", defaultApplicationUserAgent(), "shorthand for --user-agent")
 	set.StringVar(&values.cacheDir, "cache-dir", "", "optional persistent API cache directory")
+	set.StringVar(&values.cacheDir, "C", "", "shorthand for --cache-dir")
 	set.DurationVar(&values.timeout, "timeout", defaultTimeout, "overall command timeout")
+	set.DurationVar(&values.timeout, "t", defaultTimeout, "shorthand for --timeout")
 	if compact {
 		set.BoolVar(&values.compact, "compact", false, "emit compact JSON")
+		set.StringVar(&values.format, "format", "json", "output format: json, jsonl, or text")
+		set.StringVar(&values.format, "F", "json", "shorthand for --format")
 	}
 }
 func addFetchFlags(set *flag.FlagSet, values *fetchFlags, entityOutput bool) {
@@ -120,26 +132,31 @@ func runGet(parent context.Context, args []string, stdout, stderr io.Writer) int
 	addCommonFlags(set, &common, true, 45*time.Second)
 	addFetchFlags(set, &fetch, true)
 	set.StringVar(&output, "output", "", "write JSON to file instead of stdout")
+	set.StringVar(&output, "o", "", "shorthand for --output")
 	set.StringVar(&osmReference, "osm", "", "resolve OSM TYPE/ID (relation, way, or node)")
-	set.StringVar(&wikipediaReference, "wikipedia", "", "resolve Wikipedia LANGUAGE:TITLE")
+	set.StringVar(&wikipediaReference, "wiki", "", "resolve Wikipedia LANGUAGE:TITLE")
 	set.Usage = func() {
-		fmt.Fprintln(set.Output(), "usage: wikimedia get [flags] QID | --osm TYPE/ID | --wikipedia LANGUAGE:TITLE")
+		fmt.Fprintln(set.Output(), "usage: wikimedia get [flags] REFERENCE | --osm TYPE/ID | --wiki LANGUAGE:TITLE")
 		set.PrintDefaults()
 	}
 	if err := set.Parse(args); err != nil {
 		return flagExitCode(err)
 	}
 	if (osmReference != "" || wikipediaReference != "") && (osmReference != "" && wikipediaReference != "" || set.NArg() != 0) {
-		fmt.Fprintln(stderr, "use exactly one of QID, --osm, or --wikipedia")
+		fmt.Fprintln(stderr, "use exactly one of REFERENCE, --osm, or --wiki")
 		return 2
 	}
-	id := ""
+	references := []string(nil)
 	if osmReference == "" && wikipediaReference == "" {
 		var ok bool
-		id, ok = requireOneID(set, stderr)
+		references, ok = requireReferences(set, stderr)
 		if !ok {
 			return 2
 		}
+	} else if osmReference != "" {
+		references = []string{"osm:" + osmReference}
+	} else {
+		references = []string{"wikipedia:" + wikipediaReference}
 	}
 	ctx, cancel := commandContext(parent, common.timeout)
 	defer cancel()
@@ -147,17 +164,27 @@ func runGet(parent context.Context, args []string, stdout, stderr io.Writer) int
 	if err != nil {
 		return printError(stderr, err)
 	}
-	result, err := fetchByReference(ctx, client, id, osmReference, wikipediaReference, fetch.options())
-	if err != nil {
-		return printError(stderr, err)
+	var value any
+	if len(references) == 1 {
+		result, err := fetchByReference(ctx, client, references[0], osmReference, wikipediaReference, fetch.options())
+		if err != nil {
+			return printError(stderr, err)
+		}
+		value = result
+	} else {
+		items, err := client.FetchMany(ctx, references, fetch.options()...)
+		if err != nil {
+			return printError(stderr, err)
+		}
+		value = items
 	}
-	if err := writeJSON(output, result, common.compact, stdout); err != nil {
+	if err := writeOutput(output, value, common.format, common.compact, stdout); err != nil {
 		return printError(stderr, err)
 	}
 	return 0
 }
 
-func fetchByReference(ctx context.Context, client *wikimedia.Client, id, osmReference, wikipediaReference string, options []wikimedia.FetchOption) (*wikimedia.Result, error) {
+func fetchByReference(ctx context.Context, client *wikimedia.Client, reference, osmReference, wikipediaReference string, options []wikimedia.FetchOption) (*wikimedia.Result, error) {
 	if osmReference != "" {
 		kind, value, ok := strings.Cut(strings.TrimSpace(osmReference), "/")
 		if !ok || value == "" {
@@ -172,7 +199,7 @@ func fetchByReference(ctx context.Context, client *wikimedia.Client, id, osmRefe
 		}
 		return client.FetchByWikipedia(ctx, language, title, options...)
 	}
-	return client.Fetch(ctx, id, options...)
+	return client.FetchByReference(ctx, reference, options...)
 }
 
 func runMedia(parent context.Context, args []string, stdout, stderr io.Writer) int {
@@ -184,11 +211,12 @@ func runMedia(parent context.Context, args []string, stdout, stderr io.Writer) i
 	addCommonFlags(set, &common, true, 45*time.Second)
 	addFetchFlags(set, &fetch, false)
 	set.StringVar(&output, "output", "", "write JSON to file instead of stdout")
-	set.Usage = func() { fmt.Fprintln(set.Output(), "usage: wikimedia media [flags] QID"); set.PrintDefaults() }
+	set.StringVar(&output, "o", "", "shorthand for --output")
+	set.Usage = func() { fmt.Fprintln(set.Output(), "usage: wikimedia media [flags] REFERENCE"); set.PrintDefaults() }
 	if err := set.Parse(args); err != nil {
 		return flagExitCode(err)
 	}
-	id, ok := requireOneID(set, stderr)
+	reference, ok := requireOneReference(set, stderr)
 	if !ok {
 		return 2
 	}
@@ -198,17 +226,12 @@ func runMedia(parent context.Context, args []string, stdout, stderr io.Writer) i
 	if err != nil {
 		return printError(stderr, err)
 	}
-	result, err := client.Fetch(ctx, id, fetch.options()...)
+	result, err := client.FetchByReference(ctx, reference, fetch.options()...)
 	if err != nil {
 		return printError(stderr, err)
 	}
-	payload := struct {
-		ID       string              `json:"id"`
-		Label    string              `json:"label,omitempty"`
-		Media    []wikimedia.Media   `json:"media"`
-		Warnings []wikimedia.Warning `json:"warnings,omitempty"`
-	}{result.ID, result.Label, result.Media, result.Warnings}
-	if err := writeJSON(output, payload, common.compact, stdout); err != nil {
+	payload := mediaOutput{ID: result.ID, Label: result.Label, Media: result.Media, Warnings: result.Warnings}
+	if err := writeOutput(output, payload, common.format, common.compact, stdout); err != nil {
 		return printError(stderr, err)
 	}
 	return 0
@@ -237,28 +260,38 @@ type manifestFile struct {
 	LicenseURL       string        `json:"license_url,omitempty"`
 }
 
+type mediaOutput struct {
+	ID       string              `json:"id"`
+	Label    string              `json:"label,omitempty"`
+	Media    []wikimedia.Media   `json:"media"`
+	Warnings []wikimedia.Warning `json:"warnings,omitempty"`
+}
+
 func runDownload(parent context.Context, args []string, stdout, stderr io.Writer) int {
 	set := flag.NewFlagSet("wikimedia download", flag.ContinueOnError)
 	set.SetOutput(stderr)
 	var common commonFlags
 	var fetch fetchFlags
 	var outputDir, manifestPath, variant, kind string
-	var overwrite, primaryOnly bool
+	var overwrite, primaryOnly, resume bool
+	var concurrency int
 	var maximumBytes int64
 	addCommonFlags(set, &common, false, 5*time.Minute)
 	addFetchFlags(set, &fetch, false)
 	set.StringVar(&outputDir, "output", ".", "base output directory")
-	set.StringVar(&manifestPath, "manifest", "", "manifest path (default: OUTPUT/QID/manifest.json)")
+	set.StringVar(&manifestPath, "manifest", "", "manifest path (default: OUTPUT/RESOLVED-QID/manifest.json)")
 	set.StringVar(&variant, "variant", "thumbnail", "download variant: thumbnail or original")
 	set.StringVar(&kind, "kind", "image", "media filter: image or all")
 	set.BoolVar(&primaryOnly, "primary", false, "download only selected primary media")
 	set.BoolVar(&overwrite, "overwrite", false, "replace existing regular files")
+	set.BoolVar(&resume, "resume", false, "reuse verified files from the previous batch manifest")
+	set.IntVar(&concurrency, "concurrency", 4, "parallel downloads (1-16)")
 	set.Int64Var(&maximumBytes, "max-bytes", 50<<20, "maximum bytes per file")
-	set.Usage = func() { fmt.Fprintln(set.Output(), "usage: wikimedia download [flags] QID"); set.PrintDefaults() }
+	set.Usage = func() { fmt.Fprintln(set.Output(), "usage: wikimedia download [flags] REFERENCE"); set.PrintDefaults() }
 	if err := set.Parse(args); err != nil {
 		return flagExitCode(err)
 	}
-	id, ok := requireOneID(set, stderr)
+	reference, ok := requireOneReference(set, stderr)
 	if !ok {
 		return 2
 	}
@@ -278,7 +311,7 @@ func runDownload(parent context.Context, args []string, stdout, stderr io.Writer
 	if err != nil {
 		return printError(stderr, err)
 	}
-	result, err := client.Fetch(ctx, id, fetch.options()...)
+	result, err := client.FetchByReference(ctx, reference, fetch.options()...)
 	if err != nil {
 		return printError(stderr, err)
 	}
@@ -287,7 +320,7 @@ func runDownload(parent context.Context, args []string, stdout, stderr io.Writer
 		fmt.Fprintln(stderr, "no matching media found")
 		return 1
 	}
-	destination := filepath.Join(outputDir, id)
+	destination := filepath.Join(outputDir, result.ID)
 	if err := os.MkdirAll(destination, 0o755); err != nil {
 		return printError(stderr, err)
 	}
@@ -295,8 +328,10 @@ func runDownload(parent context.Context, args []string, stdout, stderr io.Writer
 	if err != nil {
 		return printError(stderr, err)
 	}
-	manifestValue := manifest{EntityID: id, Label: result.Label, Variant: variant, FetchedAt: time.Now().UTC(), APIWarnings: result.Warnings}
+	manifestValue := manifest{EntityID: result.ID, Label: result.Label, Variant: variant, FetchedAt: time.Now().UTC(), APIWarnings: result.Warnings}
 	failed := false
+	sources := make([]download.Source, 0, len(items))
+	mediaByTitle := make(map[string]wikimedia.Media, len(items))
 	for _, media := range items {
 		source, sourceErr := downloadSource(media, variant)
 		if sourceErr != nil {
@@ -304,13 +339,27 @@ func runDownload(parent context.Context, args []string, stdout, stderr io.Writer
 			failed = true
 			continue
 		}
-		local, fileErr := downloader.Download(ctx, source, destination)
-		if fileErr != nil {
-			manifestValue.Warnings = append(manifestValue.Warnings, media.Title+": "+fileErr.Error())
-			failed = true
+		sources = append(sources, source)
+		mediaByTitle[media.Title] = media
+	}
+	batchManifestPath := filepath.Join(destination, ".wikimedia-downloads.json")
+	batch, batchErr := downloader.DownloadBatch(ctx, sources, destination, download.WithConcurrency(concurrency), download.WithManifest(batchManifestPath), download.WithResume(resume))
+	if batch == nil {
+		return printError(stderr, batchErr)
+	}
+	if batchErr != nil {
+		failed = true
+	}
+	for _, item := range batch.Items {
+		media := mediaByTitle[item.Source.CommonsTitle]
+		if item.Status == download.BatchFailed {
+			manifestValue.Warnings = append(manifestValue.Warnings, media.Title+": "+item.Error)
 			continue
 		}
-		manifestValue.Files = append(manifestValue.Files, manifestFile{Local: *local, CommonsTitle: media.Title, CommonsPageURL: media.PageURL, OriginalURL: media.OriginalURL, ThumbnailURL: media.ThumbnailURL, Artist: media.Artist, Credit: media.Credit, Attribution: media.Attribution, License: media.License, LicenseShortName: media.LicenseShortName, LicenseURL: media.LicenseURL})
+		if item.File == nil {
+			continue
+		}
+		manifestValue.Files = append(manifestValue.Files, manifestFile{Local: *item.File, CommonsTitle: media.Title, CommonsPageURL: media.PageURL, OriginalURL: media.OriginalURL, ThumbnailURL: media.ThumbnailURL, Artist: media.Artist, Credit: media.Credit, Attribution: media.Attribution, License: media.License, LicenseShortName: media.LicenseShortName, LicenseURL: media.LicenseURL})
 	}
 	if manifestPath == "" {
 		manifestPath = filepath.Join(destination, "manifest.json")
@@ -369,17 +418,138 @@ func isVisualMedia(value wikimedia.Media) bool {
 	}
 }
 
-func requireOneID(set *flag.FlagSet, stderr io.Writer) (string, bool) {
-	if set.NArg() != 1 {
+func runSearch(parent context.Context, args []string, stdout, stderr io.Writer) int {
+	set := flag.NewFlagSet("wikimedia search", flag.ContinueOnError)
+	set.SetOutput(stderr)
+	var common commonFlags
+	var output, language string
+	var limit int
+	addCommonFlags(set, &common, true, 45*time.Second)
+	set.StringVar(&language, "language", "", "result language (default: first --languages value)")
+	set.IntVar(&limit, "limit", 10, "maximum item results (1-50)")
+	set.IntVar(&limit, "n", 10, "shorthand for --limit")
+	set.StringVar(&output, "output", "", "write JSON to file instead of stdout")
+	set.StringVar(&output, "o", "", "shorthand for --output")
+	set.Usage = func() { fmt.Fprintln(set.Output(), "usage: wikimedia search [flags] QUERY"); set.PrintDefaults() }
+	if err := set.Parse(args); err != nil {
+		return flagExitCode(err)
+	}
+	if set.NArg() == 0 {
 		set.Usage()
+		return 2
+	}
+	ctx, cancel := commandContext(parent, common.timeout)
+	defer cancel()
+	client, err := common.newClient()
+	if err != nil {
+		return printError(stderr, err)
+	}
+	options := []wikidata.SearchOption{wikidata.SearchLimit(limit)}
+	if strings.TrimSpace(language) != "" {
+		options = append(options, wikidata.SearchLanguage(language))
+	}
+	results, err := client.SearchItems(ctx, strings.Join(set.Args(), " "), options...)
+	if err != nil {
+		return printError(stderr, err)
+	}
+	if err := writeOutput(output, results, common.format, common.compact, stdout); err != nil {
+		return printError(stderr, err)
+	}
+	return 0
+}
+
+func runSPARQL(parent context.Context, args []string, stdout, stderr io.Writer) int {
+	set := flag.NewFlagSet("wikimedia sparql", flag.ContinueOnError)
+	set.SetOutput(stderr)
+	var common commonFlags
+	var output, query, queryFile string
+	addCommonFlags(set, &common, true, 45*time.Second)
+	set.StringVar(&query, "query", "", "SPARQL query text")
+	set.StringVar(&query, "q", "", "shorthand for --query")
+	set.StringVar(&queryFile, "file", "", "read SPARQL query text from file")
+	set.StringVar(&queryFile, "f", "", "shorthand for --file")
+	set.StringVar(&output, "output", "", "write JSON to file instead of stdout")
+	set.StringVar(&output, "o", "", "shorthand for --output")
+	set.Usage = func() {
+		fmt.Fprintln(set.Output(), "usage: wikimedia sparql [flags] --query QUERY | --file QUERY.rq")
+		set.PrintDefaults()
+	}
+	if err := set.Parse(args); err != nil {
+		return flagExitCode(err)
+	}
+	if query != "" && queryFile != "" || set.NArg() != 0 {
+		fmt.Fprintln(stderr, "use exactly one of --query or --file")
+		return 2
+	}
+	if queryFile != "" {
+		contents, err := readSmallFile(queryFile, 1<<20)
+		if err != nil {
+			return printError(stderr, err)
+		}
+		query = contents
+	}
+	if strings.TrimSpace(query) == "" {
+		set.Usage()
+		return 2
+	}
+	ctx, cancel := commandContext(parent, common.timeout)
+	defer cancel()
+	client, err := common.newClient()
+	if err != nil {
+		return printError(stderr, err)
+	}
+	result, err := client.SPARQL().Query(ctx, query)
+	if err != nil {
+		return printError(stderr, err)
+	}
+	if err := writeOutput(output, result, common.format, common.compact, stdout); err != nil {
+		return printError(stderr, err)
+	}
+	return 0
+}
+
+func readSmallFile(path string, limit int64) (string, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer file.Close()
+	contents, err := io.ReadAll(io.LimitReader(file, limit+1))
+	if err != nil {
+		return "", err
+	}
+	if int64(len(contents)) > limit {
+		return "", fmt.Errorf("query file exceeds %d byte limit", limit)
+	}
+	return string(contents), nil
+}
+
+func requireOneReference(set *flag.FlagSet, stderr io.Writer) (string, bool) {
+	references, ok := requireReferences(set, stderr)
+	if !ok || len(references) != 1 {
+		if ok {
+			set.Usage()
+		}
 		return "", false
 	}
-	id := strings.TrimSpace(set.Arg(0))
-	if !strings.HasPrefix(id, "Q") {
-		fmt.Fprintln(stderr, "QID must be a Wikidata item such as Q82425")
-		return "", false
+	return references[0], true
+}
+
+func requireReferences(set *flag.FlagSet, stderr io.Writer) ([]string, bool) {
+	if set.NArg() == 0 {
+		set.Usage()
+		return nil, false
 	}
-	return id, true
+	references := make([]string, 0, set.NArg())
+	for _, value := range set.Args() {
+		reference := strings.TrimSpace(value)
+		if reference == "" {
+			fmt.Fprintln(stderr, "reference must not be empty")
+			return nil, false
+		}
+		references = append(references, reference)
+	}
+	return references, true
 }
 func commandContext(parent context.Context, timeout time.Duration) (context.Context, context.CancelFunc) {
 	if timeout <= 0 {
@@ -397,16 +567,124 @@ func splitComma(value string) []string {
 	}
 	return result
 }
-func writeJSON(path string, value any, compact bool, stdout io.Writer) error {
-	if path != "" {
-		return writeJSONFile(path, value, compact)
+func writeOutput(path string, value any, format string, compact bool, stdout io.Writer) error {
+	var buffer strings.Builder
+	format = strings.ToLower(strings.TrimSpace(format))
+	switch format {
+	case "", "json":
+		encoder := json.NewEncoder(&buffer)
+		if !compact {
+			encoder.SetIndent("", "  ")
+		}
+		encoder.SetEscapeHTML(false)
+		if err := encoder.Encode(value); err != nil {
+			return err
+		}
+	case "jsonl":
+		if err := writeJSONLines(&buffer, value); err != nil {
+			return err
+		}
+	case "text":
+		buffer.WriteString(textOutput(value))
+	default:
+		return fmt.Errorf("unsupported output format %q (want json, jsonl, or text)", format)
 	}
-	encoder := json.NewEncoder(stdout)
-	if !compact {
-		encoder.SetIndent("", "  ")
+	if path == "" {
+		_, err := io.WriteString(stdout, buffer.String())
+		return err
 	}
+	return writeOutputFile(path, []byte(buffer.String()))
+}
+
+func writeJSONLines(writer io.Writer, value any) error {
+	v := reflect.ValueOf(value)
+	for v.IsValid() && (v.Kind() == reflect.Interface || v.Kind() == reflect.Pointer) {
+		if v.IsNil() {
+			break
+		}
+		v = v.Elem()
+	}
+	encoder := json.NewEncoder(writer)
 	encoder.SetEscapeHTML(false)
-	return encoder.Encode(value)
+	if !v.IsValid() || (v.Kind() != reflect.Slice && v.Kind() != reflect.Array) {
+		return encoder.Encode(value)
+	}
+	for index := 0; index < v.Len(); index++ {
+		if err := encoder.Encode(v.Index(index).Interface()); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func textOutput(value any) string {
+	var buffer strings.Builder
+	switch value := value.(type) {
+	case *wikimedia.Result:
+		fmt.Fprintf(&buffer, "%s\t%s\n", value.ID, value.Label)
+		if value.Description != "" {
+			fmt.Fprintln(&buffer, value.Description)
+		}
+		fmt.Fprintf(&buffer, "media: %d\twarnings: %d\n", len(value.Media), len(value.Warnings))
+	case []wikimedia.FetchManyItem:
+		for _, item := range value {
+			if item.Result != nil {
+				fmt.Fprintf(&buffer, "%s\t%s\t%s\n", item.Reference, item.Result.ID, item.Result.Label)
+			} else {
+				fmt.Fprintf(&buffer, "%s\tERROR\t%s\n", item.Reference, item.Error)
+			}
+		}
+	case []wikidata.SearchResult:
+		for _, item := range value {
+			fmt.Fprintf(&buffer, "%s\t%s\t%s\n", item.ID, item.Label, item.Description)
+		}
+	case *wikidata.SPARQLResult:
+		fmt.Fprintln(&buffer, strings.Join(value.Variables, "\t"))
+		for _, row := range value.Bindings {
+			fields := make([]string, len(value.Variables))
+			for index, variable := range value.Variables {
+				fields[index] = row[variable].Value
+			}
+			fmt.Fprintln(&buffer, strings.Join(fields, "\t"))
+		}
+	case mediaOutput:
+		fmt.Fprintf(&buffer, "%s\t%s\nmedia: %d\twarnings: %d\n", value.ID, value.Label, len(value.Media), len(value.Warnings))
+	default:
+		fmt.Fprintln(&buffer, value)
+	}
+	return buffer.String()
+}
+
+func writeOutputFile(path string, contents []byte) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	temporary, err := os.CreateTemp(filepath.Dir(path), ".wikimedia-*.tmp")
+	if err != nil {
+		return err
+	}
+	name := temporary.Name()
+	committed := false
+	defer func() {
+		_ = temporary.Close()
+		if !committed {
+			_ = os.Remove(name)
+		}
+	}()
+	if _, err := temporary.Write(contents); err != nil {
+		return err
+	}
+	if err := temporary.Sync(); err != nil {
+		return err
+	}
+	if err := temporary.Close(); err != nil {
+		return err
+	}
+	if err := os.Rename(name, path); err != nil {
+		return err
+	}
+	committed = true
+	return nil
 }
 func writeJSONFile(path string, value any, compact bool) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
@@ -464,6 +742,8 @@ Commands:
   get       fetch a normalized Wikidata/Wikimedia aggregate
   media     fetch media metadata only
   download  fetch metadata and download selected media
+  search    search Wikidata items by label or alias
+  sparql    run a bounded Wikidata SPARQL query
   version   print the version
 
 Run "wikimedia COMMAND -h" for command-specific flags.`)

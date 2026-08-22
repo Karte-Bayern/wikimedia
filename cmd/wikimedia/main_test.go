@@ -5,6 +5,8 @@ import (
 	"context"
 	"flag"
 	"io"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -19,14 +21,15 @@ func TestVersionAndHelp(t *testing.T) {
 	if !strings.Contains(out.String(), wikimedia.Version) {
 		t.Fatalf("stdout=%q", out.String())
 	}
-	out.Reset()
-	errOut.Reset()
-	if code := run(context.Background(), []string{"media", "-h"}, &out, &errOut); code != 0 {
-		t.Fatalf("code=%d", code)
-	}
-	help := errOut.String()
-	if strings.Contains(help, "-wikipedia") || strings.Contains(help, "-claims") || strings.Contains(help, "-raw") {
-		t.Fatalf("irrelevant flags in help:\n%s", help)
+	for _, command := range []string{"get", "media", "search", "sparql"} {
+		out.Reset()
+		errOut.Reset()
+		if code := run(context.Background(), []string{command, "-h"}, &out, &errOut); code != 0 {
+			t.Fatalf("command=%s code=%d", command, code)
+		}
+		if command == "media" && (strings.Contains(errOut.String(), "-wikipedia") || strings.Contains(errOut.String(), "-claims") || strings.Contains(errOut.String(), "-raw")) {
+			t.Fatalf("irrelevant flags in help:\n%s", errOut.String())
+		}
 	}
 }
 
@@ -48,12 +51,12 @@ func TestDownloadSourceUsesThumbnailURLFileName(t *testing.T) {
 	}
 }
 
-func TestRequireOneID(t *testing.T) {
+func TestRequireOneReference(t *testing.T) {
 	var stderr bytes.Buffer
-	set := newTestFlagSet([]string{"Q82425"})
-	id, ok := requireOneID(set, &stderr)
-	if !ok || id != "Q82425" {
-		t.Fatalf("id=%q ok=%v", id, ok)
+	set := newTestFlagSet([]string{"https://de.wikipedia.org/wiki/Brandenburger_Tor"})
+	reference, ok := requireOneReference(set, &stderr)
+	if !ok || reference != "https://de.wikipedia.org/wiki/Brandenburger_Tor" {
+		t.Fatalf("reference=%q ok=%v", reference, ok)
 	}
 }
 
@@ -78,5 +81,40 @@ func TestFilterDownloadMediaImageMeansVisualMedia(t *testing.T) {
 	all := filterDownloadMedia(values, false, "all")
 	if len(all) != len(values) {
 		t.Fatalf("all=%+v", all)
+	}
+}
+
+func TestReadSmallFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "query.rq")
+	if err := os.WriteFile(path, []byte("SELECT * WHERE {}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	contents, err := readSmallFile(path, 1024)
+	if err != nil || contents != "SELECT * WHERE {}" {
+		t.Fatalf("contents=%q err=%v", contents, err)
+	}
+	if _, err := readSmallFile(path, 4); err == nil {
+		t.Fatal("oversized file was accepted")
+	}
+}
+
+func TestWriteOutputFormats(t *testing.T) {
+	var output bytes.Buffer
+	values := []wikimedia.SearchResult{{ID: "Q64", Label: "Berlin"}, {ID: "Q90", Label: "Paris"}}
+	if err := writeOutput("", values, "jsonl", false, &output); err != nil {
+		t.Fatal(err)
+	}
+	if lines := strings.Split(strings.TrimSpace(output.String()), "\n"); len(lines) != 2 || !strings.Contains(lines[0], "Q64") {
+		t.Fatalf("jsonl=%q", output.String())
+	}
+	output.Reset()
+	if err := writeOutput("", values, "text", false, &output); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(output.String(), "Q64\tBerlin") {
+		t.Fatalf("text=%q", output.String())
+	}
+	if err := writeOutput("", values, "yaml", false, &output); err == nil {
+		t.Fatal("invalid format was accepted")
 	}
 }

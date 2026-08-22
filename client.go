@@ -90,6 +90,15 @@ func (c *Client) SPARQL() *wikidata.SPARQLClient {
 	return c.sparql
 }
 
+// SearchItems performs a full-text item search. Use it for names and aliases;
+// use SPARQL for graph-shaped queries.
+func (c *Client) SearchItems(ctx context.Context, query string, options ...wikidata.SearchOption) ([]SearchResult, error) {
+	if c == nil || c.wikidata == nil {
+		return nil, errors.New("wikimedia: nil client")
+	}
+	return c.wikidata.SearchItems(ctx, query, options...)
+}
+
 // Commons returns the low-level Commons client used by this aggregate client.
 func (c *Client) Commons() *commons.Client {
 	if c == nil {

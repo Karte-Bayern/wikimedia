@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"unicode/utf8"
 )
@@ -97,5 +98,34 @@ func TestFileNameFromURLUsesActualRepresentation(t *testing.T) {
 	long := strings.Repeat("ä", 200) + ".jpg"
 	if got := SanitizeFileName(long); len(got) > 240 || !strings.HasSuffix(got, ".jpg") || !utf8.ValidString(got) {
 		t.Fatalf("long filename invalid: bytes=%d value=%q", len(got), got)
+	}
+}
+
+func TestDownloadBatchDeduplicatesAndResumes(t *testing.T) {
+	var calls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls.Add(1)
+		_, _ = w.Write([]byte("content"))
+	}))
+	defer server.Close()
+	parsed, _ := url.Parse(server.URL)
+	downloader, err := New(WithUserAgent("download-test/1.0 (test@example.org)"), WithAllowedHosts(parsed.Hostname()), WithAllowedSchemes("http"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	directory := t.TempDir()
+	manifest := filepath.Join(directory, "batch.json")
+	sources := []Source{
+		{URL: server.URL + "/one.jpg", FileName: "one.jpg", CommonsTitle: "File:One.jpg"},
+		{URL: server.URL + "/one.jpg", FileName: "duplicate.jpg", CommonsTitle: "File:One.jpg"},
+		{URL: server.URL + "/two.jpg", FileName: "two.jpg", CommonsTitle: "File:Two.jpg"},
+	}
+	result, err := downloader.DownloadBatch(context.Background(), sources, directory, WithConcurrency(2), WithManifest(manifest))
+	if err != nil || result.Items[0].Status != BatchDownloaded || result.Items[1].Status != BatchDuplicate || result.Items[2].Status != BatchDownloaded || calls.Load() != 2 {
+		t.Fatalf("result=%+v calls=%d err=%v", result, calls.Load(), err)
+	}
+	resumed, err := downloader.DownloadBatch(context.Background(), sources, directory, WithConcurrency(2), WithManifest(manifest), WithResume(true))
+	if err != nil || resumed.Items[0].Status != BatchSkipped || resumed.Items[2].Status != BatchSkipped || calls.Load() != 2 {
+		t.Fatalf("resumed=%+v calls=%d err=%v", resumed, calls.Load(), err)
 	}
 }

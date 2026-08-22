@@ -124,6 +124,82 @@ func TestFetchResolvesWikipediaAndOSMReferences(t *testing.T) {
 	}
 }
 
+func TestFetchByReferenceAcceptsCommonURLs(t *testing.T) {
+	server := newFixtureServer(t, false)
+	defer server.Close()
+	client, err := New(
+		WithUserAgent("aggregate-test/1.0 (test@example.org)"),
+		WithWikidataEndpoint(server.URL+"/wd"), WithCommonsEndpoint(server.URL+"/commons"),
+		WithRetryPolicy(mediawiki.RetryPolicy{MaxAttempts: 1}),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, reference := range []string{
+		"wikidata:Q82425",
+		"https://www.wikidata.org/entity/Q82425",
+		"https://de.wikipedia.org/wiki/Brandenburger_Tor",
+		"https://de.m.wikipedia.org/wiki/Brandenburger_Tor",
+		"https://www.openstreetmap.org/relation/62422",
+		"way/121590158",
+	} {
+		result, err := client.FetchByReference(context.Background(), reference, WithMediaLimit(0))
+		if err != nil || result.ID != "Q82425" {
+			t.Fatalf("reference=%q result=%+v err=%v", reference, result, err)
+		}
+	}
+	if _, err := client.FetchByReference(context.Background(), "https://example.org/item/1"); !errors.Is(err, ErrUnsupportedReference) {
+		t.Fatalf("unsupported reference error=%v", err)
+	}
+}
+
+func TestFetchManyBatchesQIDsAndKeepsItemErrors(t *testing.T) {
+	var calls int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/wd" {
+			t.Fatalf("path=%s", r.URL.Path)
+		}
+		calls++
+		if got := r.URL.Query().Get("ids"); got != "Q1|Q2" {
+			t.Fatalf("ids=%q", got)
+		}
+		_, _ = w.Write([]byte(`{"entities":{"Q1":{"id":"Q1","labels":{"en":{"language":"en","value":"One"}}},"Q2":{"id":"Q2","labels":{"en":{"language":"en","value":"Two"}}}}}`))
+	}))
+	defer server.Close()
+	client, err := New(WithUserAgent("batch-test/1.0 (test@example.org)"), WithWikidataEndpoint(server.URL+"/wd"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	items, err := client.FetchMany(context.Background(), []string{"Q1", "Q2", "Q1", "not-a-reference"}, WithMediaLimit(0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if calls != 1 || len(items) != 4 || items[0].Result.ID != "Q1" || items[1].Result.ID != "Q2" || items[2].Result.ID != "Q1" || items[3].Err == nil || items[3].Error == "" {
+		t.Fatalf("calls=%d items=%+v", calls, items)
+	}
+}
+
+func TestFetchByReferenceSupportsCommonsFilesAndCategories(t *testing.T) {
+	server := newFixtureServer(t, false)
+	defer server.Close()
+	client, err := New(
+		WithUserAgent("commons-reference-test/1.0 (test@example.org)"),
+		WithWikidataEndpoint(server.URL+"/wd"), WithCommonsEndpoint(server.URL+"/commons"),
+		WithRetryPolicy(mediawiki.RetryPolicy{MaxAttempts: 1}),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	file, err := client.FetchByReference(context.Background(), "https://commons.wikimedia.org/wiki/File:old_gate.jpg")
+	if err != nil || file.ID != "File:Gate-current.jpg" || len(file.Media) != 1 {
+		t.Fatalf("file=%+v err=%v", file, err)
+	}
+	category, err := client.FetchByReference(context.Background(), "Category:Brandenburg Gate", WithMediaLimit(10))
+	if err != nil || category.ID != "Category:Brandenburg Gate" || len(category.Media) != 2 {
+		t.Fatalf("category=%+v err=%v", category, err)
+	}
+}
+
 func TestRankAndLimitMedia(t *testing.T) {
 	values := []Media{
 		{Title: "File:Logo.svg", Kind: MediaKindLogo, MIMEType: "image/svg+xml", Width: 1000, Height: 1000, Sources: []MediaSource{{BaseScore: 350, MediaKind: MediaKindLogo}}},
