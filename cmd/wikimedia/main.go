@@ -7,15 +7,18 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"math"
 	"net/url"
 	"os"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/karte-bayern/wikimedia"
 	"github.com/karte-bayern/wikimedia/cache"
+	"github.com/karte-bayern/wikimedia/commons"
 	"github.com/karte-bayern/wikimedia/download"
 	"github.com/karte-bayern/wikimedia/wikidata"
 )
@@ -40,6 +43,10 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		return runSearch(ctx, args[1:], stdout, stderr)
 	case "sparql":
 		return runSPARQL(ctx, args[1:], stdout, stderr)
+	case "nearby":
+		return runNearby(ctx, args[1:], stdout, stderr)
+	case "category":
+		return runCategory(ctx, args[1:], stdout, stderr)
 	case "version", "--version", "-version":
 		fmt.Fprintf(stdout, "wikimedia %s\n", wikimedia.Version)
 		return 0
@@ -508,6 +515,150 @@ func runSPARQL(parent context.Context, args []string, stdout, stderr io.Writer) 
 	return 0
 }
 
+func runNearby(parent context.Context, args []string, stdout, stderr io.Writer) int {
+	set := flag.NewFlagSet("wikimedia nearby", flag.ContinueOnError)
+	set.SetOutput(stderr)
+	var common commonFlags
+	var output, bbox string
+	var radius float64
+	var limit int
+	addCommonFlags(set, &common, true, 45*time.Second)
+	set.Float64Var(&radius, "radius", 1, "search radius in kilometres")
+	set.IntVar(&limit, "limit", 50, "maximum items (1-500)")
+	set.IntVar(&limit, "n", 50, "shorthand for --limit")
+	set.StringVar(&bbox, "bbox", "", "bounding box: south,west,north,east (instead of coordinates)")
+	set.StringVar(&output, "output", "", "write output to file instead of stdout")
+	set.StringVar(&output, "o", "", "shorthand for --output")
+	set.Usage = func() {
+		fmt.Fprintln(set.Output(), "usage: wikimedia nearby [flags] LATITUDE LONGITUDE | --bbox SOUTH,WEST,NORTH,EAST")
+		set.PrintDefaults()
+	}
+	if err := set.Parse(args); err != nil {
+		return flagExitCode(err)
+	}
+	request, err := parseNearbyRequest(set, bbox, radius, limit)
+	if err != nil {
+		if errors.Is(err, errNearbyUsage) {
+			set.Usage()
+			return 2
+		}
+		return printError(stderr, err)
+	}
+	ctx, cancel := commandContext(parent, common.timeout)
+	defer cancel()
+	client, err := common.newClient()
+	if err != nil {
+		return printError(stderr, err)
+	}
+	var values []wikimedia.GeoItem
+	if request.boundingBox {
+		values, err = client.FindInBoundingBox(ctx, request.coordinates[0], request.coordinates[1], request.coordinates[2], request.coordinates[3], request.limit)
+	} else {
+		values, err = client.FindNearby(ctx, request.coordinates[0], request.coordinates[1], request.radius, request.limit)
+	}
+	if err != nil {
+		return printError(stderr, err)
+	}
+	if err := writeOutput(output, values, common.format, common.compact, stdout); err != nil {
+		return printError(stderr, err)
+	}
+	return 0
+}
+
+func runCategory(parent context.Context, args []string, stdout, stderr io.Writer) int {
+	set := flag.NewFlagSet("wikimedia category", flag.ContinueOnError)
+	set.SetOutput(stderr)
+	var common commonFlags
+	var output string
+	var pages, limit, thumbnailWidth int
+	addCommonFlags(set, &common, true, 45*time.Second)
+	set.IntVar(&pages, "pages", 1, "maximum Commons category pages")
+	set.IntVar(&limit, "limit", 50, "maximum files per category page (1-500)")
+	set.IntVar(&limit, "n", 50, "shorthand for --limit")
+	set.IntVar(&thumbnailWidth, "thumbnail-width", 1200, "requested thumbnail width")
+	set.StringVar(&output, "output", "", "write output to file instead of stdout")
+	set.StringVar(&output, "o", "", "shorthand for --output")
+	set.Usage = func() { fmt.Fprintln(set.Output(), "usage: wikimedia category [flags] CATEGORY"); set.PrintDefaults() }
+	if err := set.Parse(args); err != nil {
+		return flagExitCode(err)
+	}
+	if pages <= 0 || limit < 1 || limit > 500 || thumbnailWidth <= 0 {
+		fmt.Fprintln(stderr, "--pages and --thumbnail-width must be positive; --limit must be between 1 and 500")
+		return 2
+	}
+	category, ok := requireOneReference(set, stderr)
+	if !ok {
+		return 2
+	}
+	ctx, cancel := commandContext(parent, common.timeout)
+	defer cancel()
+	client, err := common.newClient()
+	if err != nil {
+		return printError(stderr, err)
+	}
+	files, err := client.Commons().CollectCategoryFiles(ctx, category, pages,
+		commons.CategoryLimit(limit), commons.CategoryThumbnailWidth(thumbnailWidth))
+	if err != nil {
+		return printError(stderr, err)
+	}
+	if err := writeOutput(output, files, common.format, common.compact, stdout); err != nil {
+		return printError(stderr, err)
+	}
+	return 0
+}
+
+var errNearbyUsage = errors.New("invalid nearby command usage")
+
+type nearbyRequest struct {
+	coordinates []float64
+	radius      float64
+	limit       int
+	boundingBox bool
+}
+
+func parseNearbyRequest(set *flag.FlagSet, bbox string, radius float64, limit int) (nearbyRequest, error) {
+	if limit < 1 || limit > 500 {
+		return nearbyRequest{}, fmt.Errorf("--limit must be between 1 and 500")
+	}
+	if strings.TrimSpace(bbox) != "" {
+		if set.NArg() != 0 {
+			return nearbyRequest{}, errNearbyUsage
+		}
+		coordinates, err := parseFloatList(bbox, 4)
+		if err != nil {
+			return nearbyRequest{}, fmt.Errorf("invalid --bbox: %w", err)
+		}
+		return nearbyRequest{coordinates: coordinates, limit: limit, boundingBox: true}, nil
+	}
+	if set.NArg() != 2 {
+		return nearbyRequest{}, errNearbyUsage
+	}
+	if math.IsNaN(radius) || math.IsInf(radius, 0) || radius <= 0 || radius > 1000 {
+		return nearbyRequest{}, fmt.Errorf("--radius must be between 0 and 1000 km")
+	}
+	coordinates, err := parseFloatList(strings.Join(set.Args(), ","), 2)
+	if err != nil {
+		return nearbyRequest{}, fmt.Errorf("invalid coordinates: %w", err)
+	}
+	return nearbyRequest{coordinates: coordinates, radius: radius, limit: limit}, nil
+}
+
+func parseFloatList(value string, want int) ([]float64, error) {
+	parts := strings.Split(value, ",")
+	if len(parts) != want {
+		return nil, fmt.Errorf("want %d comma-separated numbers", want)
+	}
+	result := make([]float64, want)
+	for index, part := range parts {
+		parsed, err := strconv.ParseFloat(strings.TrimSpace(part), 64)
+		if err != nil {
+			return nil, err
+		}
+		result[index] = parsed
+	}
+	return result, nil
+}
+
 func readSmallFile(path string, limit int64) (string, error) {
 	file, err := os.Open(path)
 	if err != nil {
@@ -638,6 +789,18 @@ func textOutput(value any) string {
 		for _, item := range value {
 			fmt.Fprintf(&buffer, "%s\t%s\t%s\n", item.ID, item.Label, item.Description)
 		}
+	case []wikimedia.GeoItem:
+		for _, item := range value {
+			distance := ""
+			if item.DistanceKM != nil {
+				distance = strconv.FormatFloat(*item.DistanceKM, 'f', -1, 64)
+			}
+			fmt.Fprintf(&buffer, "%s\t%s\t%s\t%s\n", item.ID, item.Label, distance, item.Description)
+		}
+	case []commons.File:
+		for _, file := range value {
+			fmt.Fprintf(&buffer, "%s\t%s\t%s\n", file.Title, file.MIMEType, file.PageURL)
+		}
 	case *wikidata.SPARQLResult:
 		fmt.Fprintln(&buffer, strings.Join(value.Variables, "\t"))
 		for _, row := range value.Bindings {
@@ -744,6 +907,8 @@ Commands:
   download  fetch metadata and download selected media
   search    search Wikidata items by label or alias
   sparql    run a bounded Wikidata SPARQL query
+  nearby    find Wikidata items around a point or in a bounding box
+  category  list direct files in a Commons category
   version   print the version
 
 Run "wikimedia COMMAND -h" for command-specific flags.`)

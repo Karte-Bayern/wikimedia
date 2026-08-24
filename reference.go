@@ -11,7 +11,8 @@ import (
 
 // FetchByReference resolves a Wikidata ID or URL, a Wikipedia page URL, or an
 // OpenStreetMap object URL. It also accepts the compact forms "wikidata:Q64",
-// "wikipedia:de:Berlin", and "relation/62422" for command-line use.
+// "wikipedia:de:Berlin", "osm:relation:62422", and "relation/62422" for
+// command-line use.
 func (c *Client) FetchByReference(ctx context.Context, reference string, options ...FetchOption) (*Result, error) {
 	reference = strings.TrimSpace(reference)
 	if wikidata.ValidItemID(reference) {
@@ -31,6 +32,11 @@ func (c *Client) FetchByReference(ctx context.Context, reference string, options
 			language, title, ok := strings.Cut(value, ":")
 			if ok {
 				return c.FetchByWikipedia(ctx, language, title, options...)
+			}
+		case "osm":
+			objectType, id, ok := strings.Cut(value, ":")
+			if ok {
+				return c.FetchByOSM(ctx, OSMType(strings.ToLower(strings.TrimSpace(objectType))), id, options...)
 			}
 		}
 	}

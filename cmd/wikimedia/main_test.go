@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"errors"
 	"flag"
 	"io"
 	"os"
@@ -21,7 +22,7 @@ func TestVersionAndHelp(t *testing.T) {
 	if !strings.Contains(out.String(), wikimedia.Version) {
 		t.Fatalf("stdout=%q", out.String())
 	}
-	for _, command := range []string{"get", "media", "search", "sparql"} {
+	for _, command := range []string{"get", "media", "search", "sparql", "nearby", "category"} {
 		out.Reset()
 		errOut.Reset()
 		if code := run(context.Background(), []string{command, "-h"}, &out, &errOut); code != 0 {
@@ -116,5 +117,37 @@ func TestWriteOutputFormats(t *testing.T) {
 	}
 	if err := writeOutput("", values, "yaml", false, &output); err == nil {
 		t.Fatal("invalid format was accepted")
+	}
+}
+
+func TestParseFloatList(t *testing.T) {
+	values, err := parseFloatList("52.5, 13.4", 2)
+	if err != nil || len(values) != 2 || values[0] != 52.5 || values[1] != 13.4 {
+		t.Fatalf("values=%v err=%v", values, err)
+	}
+	if _, err := parseFloatList("52.5", 2); err == nil {
+		t.Fatal("wrong number of coordinates was accepted")
+	}
+	if _, err := parseFloatList("north,13.4", 2); err == nil {
+		t.Fatal("non-numeric coordinate was accepted")
+	}
+}
+
+func TestParseNearbyRequest(t *testing.T) {
+	point := newTestFlagSet([]string{"52.5", "13.4"})
+	request, err := parseNearbyRequest(point, "", 2, 25)
+	if err != nil || request.boundingBox || request.radius != 2 || len(request.coordinates) != 2 {
+		t.Fatalf("request=%+v err=%v", request, err)
+	}
+	box := newTestFlagSet(nil)
+	request, err = parseNearbyRequest(box, "52.4,13.3,52.6,13.5", 0, 25)
+	if err != nil || !request.boundingBox || len(request.coordinates) != 4 {
+		t.Fatalf("request=%+v err=%v", request, err)
+	}
+	if _, err := parseNearbyRequest(point, "", 0, 25); err == nil {
+		t.Fatal("invalid radius was accepted")
+	}
+	if _, err := parseNearbyRequest(point, "52.4,13.3,52.6,13.5", 2, 25); !errors.Is(err, errNearbyUsage) {
+		t.Fatalf("err=%v", err)
 	}
 }

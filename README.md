@@ -106,6 +106,7 @@ in configuration files and scripts:
 wikimedia get https://de.wikipedia.org/wiki/Brandenburger_Tor
 wikimedia media https://www.openstreetmap.org/relation/62422
 wikimedia get wikidata:Q82425
+wikimedia get osm:relation:62422
 wikimedia get https://commons.wikimedia.org/wiki/File:Brandenburger_Tor_morgens.jpg
 wikimedia media 'Category:Brandenburg Gate'
 ```
@@ -234,10 +235,20 @@ err := client.SPARQL().QueryPages(ctx, 100, 10,
 
 Use the bounded helpers for nearby or bounding-box lookups. Coordinates are
 WGS84 and distances are kilometres; both helpers limit results to 500 items.
+The CLI exposes the same bounded queries and accepts JSON, JSONL, or
+tab-separated text output.
 
 ```go
 nearby, err := client.FindNearby(ctx, 52.5163, 13.3777, 2, 25)
 inBox, err := client.FindInBoundingBox(ctx, 52.4, 13.2, 52.6, 13.6, 100)
+```
+
+```bash
+# Radius in kilometres around longitude/latitude.
+wikimedia nearby 52.5163 13.3777 --radius 2 --limit 25 -F text
+
+# Bounding box: south,west,north,east.
+wikimedia nearby --bbox 52.50,13.35,52.55,13.45 -F jsonl
 ```
 
 ## Typed convenience accessors
@@ -263,6 +274,11 @@ files, err := client.Commons().CollectCategoryFiles(
     ctx, "Category:Brandenburg Gate", 3,
     commons.CategoryLimit(50),
 )
+```
+
+```bash
+# Direct files only; subcategories are never traversed implicitly.
+wikimedia category 'Category:Brandenburg Gate' --pages 2 --limit 100 -F text
 ```
 
 For many media representations, the downloader limits concurrency, emits

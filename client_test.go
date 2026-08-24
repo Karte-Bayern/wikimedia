@@ -142,6 +142,7 @@ func TestFetchByReferenceAcceptsCommonURLs(t *testing.T) {
 		"https://de.m.wikipedia.org/wiki/Brandenburger_Tor",
 		"https://www.openstreetmap.org/relation/62422",
 		"way/121590158",
+		"osm:node:164979149",
 	} {
 		result, err := client.FetchByReference(context.Background(), reference, WithMediaLimit(0))
 		if err != nil || result.ID != "Q82425" {
