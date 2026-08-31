@@ -27,6 +27,7 @@ func (r *Result) StringValues(property string) []string {
 	if r == nil {
 		return nil
 	}
+	property = strings.ToUpper(strings.TrimSpace(property))
 	values := make([]string, 0, len(r.Claims[property]))
 	seen := make(map[string]struct{})
 	for _, claim := range r.Claims[property] {
@@ -44,11 +45,33 @@ func (r *Result) StringValues(property string) []string {
 	return values
 }
 
+// PreferredStringValue returns the first string value at the best available
+// Wikidata rank. Deprecated statements are used only when no normal or
+// preferred string value exists.
+func (r *Result) PreferredStringValue(property string) string {
+	if r == nil {
+		return ""
+	}
+	property = strings.ToUpper(strings.TrimSpace(property))
+	for _, rank := range []string{"preferred", "normal", "deprecated"} {
+		for _, claim := range r.Claims[property] {
+			if normalizedResultClaimRank(claim.Rank) != rank {
+				continue
+			}
+			if value, ok := claim.MainSnak.StringValue(); ok && strings.TrimSpace(value) != "" {
+				return strings.TrimSpace(value)
+			}
+		}
+	}
+	return ""
+}
+
 // EntityReferences returns linked-item values for a Wikidata property.
 func (r *Result) EntityReferences(property string) []EntityReference {
 	if r == nil {
 		return nil
 	}
+	property = strings.ToUpper(strings.TrimSpace(property))
 	values := make([]EntityReference, 0, len(r.Claims[property]))
 	seen := make(map[string]struct{})
 	for _, claim := range r.Claims[property] {
@@ -91,11 +114,7 @@ func (r *Result) HeritageDesignations() []EntityReference { return r.EntityRefer
 
 // OpeningHours returns the first opening-hours statement (P8629), if present.
 func (r *Result) OpeningHours() string {
-	values := r.StringValues("P8629")
-	if len(values) == 0 {
-		return ""
-	}
-	return values[0]
+	return r.PreferredStringValue("P8629")
 }
 
 // Address returns common address claims: street address (P6375), house number
@@ -112,6 +131,7 @@ func (r *Result) firstTimeValue(property string) (wikidata.TimeValue, bool) {
 	if r == nil {
 		return wikidata.TimeValue{}, false
 	}
+	property = strings.ToUpper(strings.TrimSpace(property))
 	for _, rank := range []string{"preferred", "normal", "deprecated"} {
 		for _, claim := range r.Claims[property] {
 			if claim.Rank != rank {
@@ -131,9 +151,14 @@ func (r *Result) firstTimeValue(property string) (wikidata.TimeValue, bool) {
 }
 
 func firstStringValue(result *Result, property string) string {
-	values := result.StringValues(property)
-	if len(values) == 0 {
-		return ""
+	return result.PreferredStringValue(property)
+}
+
+func normalizedResultClaimRank(rank string) string {
+	switch strings.ToLower(strings.TrimSpace(rank)) {
+	case "preferred", "deprecated":
+		return strings.ToLower(strings.TrimSpace(rank))
+	default:
+		return "normal"
 	}
-	return values[0]
 }

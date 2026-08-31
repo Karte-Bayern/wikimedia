@@ -12,6 +12,7 @@ import (
 )
 
 var languagePattern = regexp.MustCompile(`^[a-z][a-z0-9-]{0,19}$`)
+var extractParagraphPattern = regexp.MustCompile(`[ \t]*\n[ \t]*\n+`)
 
 // Client reads language-specific Wikipedia introductory extracts.
 type Client struct{ cfg config }
@@ -60,8 +61,11 @@ func (c *Client) GetSummary(ctx context.Context, language, title string) (*Artic
 	parameters := url.Values{
 		"action": {"query"}, "prop": {"extracts|pageimages|info|description"},
 		"titles": {title}, "redirects": {"1"}, "exintro": {"1"}, "explaintext": {"1"},
-		"piprop": {"thumbnail"}, "pithumbsize": {fmt.Sprintf("%d", c.cfg.thumbnailWidth)},
+		"piprop": {"thumbnail|original|name"}, "pithumbsize": {fmt.Sprintf("%d", c.cfg.thumbnailWidth)},
 		"inprop": {"url"},
+	}
+	if c.cfg.extractSentences > 0 {
+		parameters.Set("exsentences", fmt.Sprintf("%d", c.cfg.extractSentences))
 	}
 	var envelope struct {
 		Query struct {
@@ -72,7 +76,9 @@ func (c *Client) GetSummary(ctx context.Context, language, title string) (*Artic
 				FullURL     string     `json:"fullurl"`
 				Description string     `json:"description"`
 				Extract     string     `json:"extract"`
+				ImageTitle  string     `json:"pageimage"`
 				Thumbnail   *Thumbnail `json:"thumbnail,omitempty"`
+				Original    *Thumbnail `json:"original,omitempty"`
 			} `json:"pages"`
 		} `json:"query"`
 	}
@@ -83,5 +89,20 @@ func (c *Client) GetSummary(ctx context.Context, language, title string) (*Artic
 		return nil, fmt.Errorf("%w: %s:%s", ErrNotFound, language, title)
 	}
 	page := envelope.Query.Pages[0]
-	return &Article{Language: language, PageID: page.PageID, Title: page.Title, URL: page.FullURL, Description: page.Description, Extract: page.Extract, Thumbnail: page.Thumbnail}, nil
+	return &Article{
+		Language: language, PageID: page.PageID, Title: page.Title, URL: page.FullURL,
+		Description: strings.TrimSpace(page.Description), Extract: cleanExtract(page.Extract), ImageTitle: page.ImageTitle,
+		Thumbnail: page.Thumbnail, Original: page.Original,
+	}, nil
+}
+
+func cleanExtract(value string) string {
+	paragraphs := extractParagraphPattern.Split(strings.ReplaceAll(value, "\r\n", "\n"), -1)
+	clean := make([]string, 0, len(paragraphs))
+	for _, paragraph := range paragraphs {
+		if paragraph = strings.Join(strings.Fields(paragraph), " "); paragraph != "" {
+			clean = append(clean, paragraph)
+		}
+	}
+	return strings.Join(clean, "\n\n")
 }

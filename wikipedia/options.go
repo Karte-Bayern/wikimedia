@@ -15,6 +15,7 @@ type config struct {
 	cache            mediawiki.Cache
 	cacheTTL         time.Duration
 	thumbnailWidth   int
+	extractSentences int
 	endpointTemplate string
 }
 
@@ -53,6 +54,10 @@ func WithCache(value mediawiki.Cache, ttl time.Duration) Option {
 
 // WithThumbnailWidth sets the requested page-image width.
 func WithThumbnailWidth(value int) Option { return func(c *config) { c.thumbnailWidth = value } }
+
+// WithExtractSentences limits a lead extract to the requested number of
+// sentences. A value less than one returns the complete lead section.
+func WithExtractSentences(value int) Option { return func(c *config) { c.extractSentences = value } }
 
 // WithEndpointTemplate replaces the default https://%s.wikipedia.org/w/api.php template.
 // It is primarily useful for compatible installations and tests.

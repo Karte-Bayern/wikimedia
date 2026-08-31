@@ -3,7 +3,6 @@ package main
 import (
 	"bytes"
 	"context"
-	"errors"
 	"flag"
 	"io"
 	"os"
@@ -147,7 +146,21 @@ func TestParseNearbyRequest(t *testing.T) {
 	if _, err := parseNearbyRequest(point, "", 0, 25); err == nil {
 		t.Fatal("invalid radius was accepted")
 	}
-	if _, err := parseNearbyRequest(point, "52.4,13.3,52.6,13.5", 2, 25); !errors.Is(err, errNearbyUsage) {
+	if _, err := parseNearbyRequest(point, "52.4,13.3,52.6,13.5", 2, 25); err == nil {
 		t.Fatalf("err=%v", err)
+	}
+}
+
+func TestNearbyAndCategoryRejectInvalidFlagsBeforeNetworkWork(t *testing.T) {
+	for _, args := range [][]string{
+		{"nearby", "--radius", "0", "52.5", "13.4"},
+		{"nearby", "--limit", "501", "52.5", "13.4"},
+		{"category", "--pages", "0", "Category:Example"},
+		{"category", "--limit", "501", "Category:Example"},
+	} {
+		var stdout, stderr bytes.Buffer
+		if code := run(context.Background(), args, &stdout, &stderr); code != 2 {
+			t.Fatalf("args=%v code=%d stderr=%s", args, code, stderr.String())
+		}
 	}
 }

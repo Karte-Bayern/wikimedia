@@ -91,6 +91,11 @@ func addCommonFlags(set *flag.FlagSet, values *commonFlags, compact bool, defaul
 		set.StringVar(&values.format, "F", "json", "shorthand for --format")
 	}
 }
+
+func addOutputFlags(set *flag.FlagSet, output *string) {
+	set.StringVar(output, "output", "", "write output to file instead of stdout")
+	set.StringVar(output, "o", "", "shorthand for --output")
+}
 func addFetchFlags(set *flag.FlagSet, values *fetchFlags, entityOutput bool) {
 	values.directMedia = true
 	values.mediaLimit = 20
@@ -138,8 +143,7 @@ func runGet(parent context.Context, args []string, stdout, stderr io.Writer) int
 	var output, osmReference, wikipediaReference string
 	addCommonFlags(set, &common, true, 45*time.Second)
 	addFetchFlags(set, &fetch, true)
-	set.StringVar(&output, "output", "", "write JSON to file instead of stdout")
-	set.StringVar(&output, "o", "", "shorthand for --output")
+	addOutputFlags(set, &output)
 	set.StringVar(&osmReference, "osm", "", "resolve OSM TYPE/ID (relation, way, or node)")
 	set.StringVar(&wikipediaReference, "wiki", "", "resolve Wikipedia LANGUAGE:TITLE")
 	set.Usage = func() {
@@ -217,8 +221,7 @@ func runMedia(parent context.Context, args []string, stdout, stderr io.Writer) i
 	var output string
 	addCommonFlags(set, &common, true, 45*time.Second)
 	addFetchFlags(set, &fetch, false)
-	set.StringVar(&output, "output", "", "write JSON to file instead of stdout")
-	set.StringVar(&output, "o", "", "shorthand for --output")
+	addOutputFlags(set, &output)
 	set.Usage = func() { fmt.Fprintln(set.Output(), "usage: wikimedia media [flags] REFERENCE"); set.PrintDefaults() }
 	if err := set.Parse(args); err != nil {
 		return flagExitCode(err)
@@ -435,8 +438,7 @@ func runSearch(parent context.Context, args []string, stdout, stderr io.Writer) 
 	set.StringVar(&language, "language", "", "result language (default: first --languages value)")
 	set.IntVar(&limit, "limit", 10, "maximum item results (1-50)")
 	set.IntVar(&limit, "n", 10, "shorthand for --limit")
-	set.StringVar(&output, "output", "", "write JSON to file instead of stdout")
-	set.StringVar(&output, "o", "", "shorthand for --output")
+	addOutputFlags(set, &output)
 	set.Usage = func() { fmt.Fprintln(set.Output(), "usage: wikimedia search [flags] QUERY"); set.PrintDefaults() }
 	if err := set.Parse(args); err != nil {
 		return flagExitCode(err)
@@ -475,8 +477,7 @@ func runSPARQL(parent context.Context, args []string, stdout, stderr io.Writer) 
 	set.StringVar(&query, "q", "", "shorthand for --query")
 	set.StringVar(&queryFile, "file", "", "read SPARQL query text from file")
 	set.StringVar(&queryFile, "f", "", "shorthand for --file")
-	set.StringVar(&output, "output", "", "write JSON to file instead of stdout")
-	set.StringVar(&output, "o", "", "shorthand for --output")
+	addOutputFlags(set, &output)
 	set.Usage = func() {
 		fmt.Fprintln(set.Output(), "usage: wikimedia sparql [flags] --query QUERY | --file QUERY.rq")
 		set.PrintDefaults()
@@ -527,8 +528,7 @@ func runNearby(parent context.Context, args []string, stdout, stderr io.Writer) 
 	set.IntVar(&limit, "limit", 50, "maximum items (1-500)")
 	set.IntVar(&limit, "n", 50, "shorthand for --limit")
 	set.StringVar(&bbox, "bbox", "", "bounding box: south,west,north,east (instead of coordinates)")
-	set.StringVar(&output, "output", "", "write output to file instead of stdout")
-	set.StringVar(&output, "o", "", "shorthand for --output")
+	addOutputFlags(set, &output)
 	set.Usage = func() {
 		fmt.Fprintln(set.Output(), "usage: wikimedia nearby [flags] LATITUDE LONGITUDE | --bbox SOUTH,WEST,NORTH,EAST")
 		set.PrintDefaults()
@@ -538,11 +538,9 @@ func runNearby(parent context.Context, args []string, stdout, stderr io.Writer) 
 	}
 	request, err := parseNearbyRequest(set, bbox, radius, limit)
 	if err != nil {
-		if errors.Is(err, errNearbyUsage) {
-			set.Usage()
-			return 2
-		}
-		return printError(stderr, err)
+		fmt.Fprintln(stderr, "error:", err)
+		set.Usage()
+		return 2
 	}
 	ctx, cancel := commandContext(parent, common.timeout)
 	defer cancel()
@@ -576,8 +574,7 @@ func runCategory(parent context.Context, args []string, stdout, stderr io.Writer
 	set.IntVar(&limit, "limit", 50, "maximum files per category page (1-500)")
 	set.IntVar(&limit, "n", 50, "shorthand for --limit")
 	set.IntVar(&thumbnailWidth, "thumbnail-width", 1200, "requested thumbnail width")
-	set.StringVar(&output, "output", "", "write output to file instead of stdout")
-	set.StringVar(&output, "o", "", "shorthand for --output")
+	addOutputFlags(set, &output)
 	set.Usage = func() { fmt.Fprintln(set.Output(), "usage: wikimedia category [flags] CATEGORY"); set.PrintDefaults() }
 	if err := set.Parse(args); err != nil {
 		return flagExitCode(err)
@@ -607,8 +604,6 @@ func runCategory(parent context.Context, args []string, stdout, stderr io.Writer
 	return 0
 }
 
-var errNearbyUsage = errors.New("invalid nearby command usage")
-
 type nearbyRequest struct {
 	coordinates []float64
 	radius      float64
@@ -622,7 +617,7 @@ func parseNearbyRequest(set *flag.FlagSet, bbox string, radius float64, limit in
 	}
 	if strings.TrimSpace(bbox) != "" {
 		if set.NArg() != 0 {
-			return nearbyRequest{}, errNearbyUsage
+			return nearbyRequest{}, fmt.Errorf("use either coordinates or --bbox")
 		}
 		coordinates, err := parseFloatList(bbox, 4)
 		if err != nil {
@@ -631,7 +626,7 @@ func parseNearbyRequest(set *flag.FlagSet, bbox string, radius float64, limit in
 		return nearbyRequest{coordinates: coordinates, limit: limit, boundingBox: true}, nil
 	}
 	if set.NArg() != 2 {
-		return nearbyRequest{}, errNearbyUsage
+		return nearbyRequest{}, fmt.Errorf("want LATITUDE and LONGITUDE, or --bbox")
 	}
 	if math.IsNaN(radius) || math.IsInf(radius, 0) || radius <= 0 || radius > 1000 {
 		return nearbyRequest{}, fmt.Errorf("--radius must be between 0 and 1000 km")

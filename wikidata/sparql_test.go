@@ -7,6 +7,9 @@ import (
 	"net/http/httptest"
 	"strconv"
 	"testing"
+	"time"
+
+	"github.com/karte-bayern/wikimedia/mediawiki"
 )
 
 func TestSPARQLQueryPostsAndDecodesBindings(t *testing.T) {
@@ -79,5 +82,41 @@ func TestSPARQLQueryRejectsInvalidQuery(t *testing.T) {
 	}
 	if _, err := client.Query(context.Background(), " \n "); !errors.Is(err, ErrInvalidQuery) {
 		t.Fatalf("err=%v", err)
+	}
+}
+
+func TestSPARQLQueryRetriesRateLimit(t *testing.T) {
+	attempts := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts++
+		if attempts == 1 {
+			w.WriteHeader(http.StatusTooManyRequests)
+			return
+		}
+		_, _ = w.Write([]byte(`{"head":{"vars":["item"]},"results":{"bindings":[]}}`))
+	}))
+	defer server.Close()
+	client, err := NewSPARQLClient(
+		WithSPARQLEndpoint(server.URL), WithSPARQLUserAgent("sparql-test/1.0 (test@example.org)"),
+		WithSPARQLRetryPolicy(mediawiki.RetryPolicy{MaxAttempts: 2, InitialBackoff: 0, MaxBackoff: 0}),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.Query(context.Background(), "SELECT * WHERE {}"); err != nil || attempts != 2 {
+		t.Fatalf("attempts=%d err=%v", attempts, err)
+	}
+}
+
+func TestSPARQLRetryAfterAndBackoff(t *testing.T) {
+	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	if got := sparqlRetryAfter("2", now); got != 2*time.Second {
+		t.Fatalf("retry after=%s", got)
+	}
+	if got := sparqlRetryAfter(now.Add(3*time.Second).Format(http.TimeFormat), now); got != 3*time.Second {
+		t.Fatalf("date retry after=%s", got)
+	}
+	if got := sparqlBackoff(mediawiki.RetryPolicy{InitialBackoff: time.Second, MaxBackoff: 3 * time.Second}, 3); got != 3*time.Second {
+		t.Fatalf("backoff=%s", got)
 	}
 }

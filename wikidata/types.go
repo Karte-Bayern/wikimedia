@@ -113,6 +113,70 @@ type MonolingualTextValue struct {
 	Language string `json:"language"`
 }
 
+// ClaimsByRank returns a property's claims in Wikidata rank order: preferred,
+// normal, then deprecated. The source order inside each rank is retained.
+// Deprecated claims are omitted unless includeDeprecated is true.
+func (e Entity) ClaimsByRank(property string, includeDeprecated bool) []Claim {
+	claims := e.Claims[strings.ToUpper(strings.TrimSpace(property))]
+	if len(claims) == 0 {
+		return nil
+	}
+	values := make([]Claim, 0, len(claims))
+	for _, rank := range []string{"preferred", "normal", "deprecated"} {
+		if rank == "deprecated" && !includeDeprecated {
+			continue
+		}
+		for _, claim := range claims {
+			if normalizedClaimRank(claim.Rank) == rank {
+				values = append(values, claim)
+			}
+		}
+	}
+	return values
+}
+
+// PreferredClaim returns the first claim at the best available rank. Set
+// includeDeprecated only when deprecated values are desired as a fallback.
+func (e Entity) PreferredClaim(property string, includeDeprecated bool) (Claim, bool) {
+	claims := e.ClaimsByRank(property, includeDeprecated)
+	if len(claims) == 0 {
+		return Claim{}, false
+	}
+	return claims[0], true
+}
+
+// QualifierSnaks returns all qualifier snaks for property in source order.
+func (c Claim) QualifierSnaks(property string) []Snak {
+	return cloneSnaks(c.Qualifiers[strings.ToUpper(strings.TrimSpace(property))])
+}
+
+// ReferenceSnaks returns all reference snaks for property in source order.
+// Reference blocks are processed in their source order.
+func (c Claim) ReferenceSnaks(property string) []Snak {
+	property = strings.ToUpper(strings.TrimSpace(property))
+	var values []Snak
+	for _, reference := range c.References {
+		values = append(values, reference.Snaks[property]...)
+	}
+	return cloneSnaks(values)
+}
+
+func normalizedClaimRank(rank string) string {
+	switch strings.ToLower(strings.TrimSpace(rank)) {
+	case "preferred", "deprecated":
+		return strings.ToLower(strings.TrimSpace(rank))
+	default:
+		return "normal"
+	}
+}
+
+func cloneSnaks(values []Snak) []Snak {
+	if len(values) == 0 {
+		return nil
+	}
+	return append([]Snak(nil), values...)
+}
+
 // StringValue decodes string, URL, external-ID, and Commons-media values.
 func (s Snak) StringValue() (string, bool) {
 	if s.SnakType != "value" || len(s.DataValue.Value) == 0 {

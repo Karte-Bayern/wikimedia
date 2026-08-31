@@ -1,6 +1,6 @@
 package wikipedia
 
-// Thumbnail is a page image thumbnail.
+// Thumbnail describes either a page image thumbnail or its original file.
 type Thumbnail struct {
 	Source string `json:"source,omitempty"`
 	Width  int    `json:"width,omitempty"`
@@ -15,5 +15,7 @@ type Article struct {
 	URL         string     `json:"url,omitempty"`
 	Description string     `json:"description,omitempty"`
 	Extract     string     `json:"extract,omitempty"`
+	ImageTitle  string     `json:"image_title,omitempty"`
 	Thumbnail   *Thumbnail `json:"thumbnail,omitempty"`
+	Original    *Thumbnail `json:"original,omitempty"`
 }

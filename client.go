@@ -48,7 +48,7 @@ func New(options ...Option) (*Client, error) {
 	}
 	sp, err := wikidata.NewSPARQLClient(
 		wikidata.WithSPARQLEndpoint(cfg.sparqlEndpoint), wikidata.WithSPARQLHTTPClient(cfg.httpClient),
-		wikidata.WithSPARQLUserAgent(userAgent), wikidata.WithSPARQLMaxResponseBytes(cfg.maxResponseBytes),
+		wikidata.WithSPARQLUserAgent(userAgent), wikidata.WithSPARQLMaxResponseBytes(cfg.maxResponseBytes), wikidata.WithSPARQLRetryPolicy(cfg.retry),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("wikimedia: create SPARQL client: %w", err)

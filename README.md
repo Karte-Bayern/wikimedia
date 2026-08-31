@@ -173,6 +173,25 @@ result, err := client.Fetch(
 )
 ```
 
+For a direct Wikipedia read, `Article` contains a normalized lead extract,
+the page-image title, a display-sized thumbnail, and original-image metadata.
+Use a sentence limit when a compact teaser is sufficient:
+
+```go
+reader, err := wikipedia.NewClient(
+    wikipedia.WithUserAgent("my-map/1.0 (admin@example.org)"),
+    wikipedia.WithExtractSentences(3),
+)
+article, err := reader.GetSummary(ctx, "de", "Brandenburger Tor")
+fmt.Println(article.Extract)
+if article.Thumbnail != nil {
+    fmt.Println(article.Thumbnail.Source) // display image
+}
+if article.Original != nil {
+    fmt.Println(article.Original.Source) // original-file URL; choose deliberately when downloading it
+}
+```
+
 ## Public package structure
 
 The root package is the convenience API. Service-specific clients remain independently usable:
@@ -194,9 +213,10 @@ The project deliberately contains no Karte.Bayern-specific POI, OSM, database, q
 
 For graph-shaped or multi-item queries, use the bounded Wikidata Query Service
 client exposed by the aggregate client. It sends `POST` requests, requires the
-same descriptive User-Agent, respects contexts, and decodes standard SPARQL
-Results JSON. Keep queries selective and paginated; SPARQL is not intended for
-fuzzy text search or large-scale exports.
+same descriptive User-Agent, respects contexts, retries rate limits and
+temporary 5xx responses with the configured bounded retry policy, and decodes
+standard SPARQL Results JSON. Keep queries selective and paginated; SPARQL is
+not intended for fuzzy text search or large-scale exports.
 
 ```go
 result, err := client.SPARQL().Query(ctx, `
@@ -263,6 +283,20 @@ areas := result.AdministrativeAreas()         // P131
 designations := result.HeritageDesignations() // P1435
 hours := result.OpeningHours()                // P8629
 address := result.Address()                   // P6375, P670, P281, P17
+```
+
+For custom properties, the lower-level Wikidata types preserve statements,
+qualifiers, and references. They expose deterministic rank handling without
+requiring callers to decode raw JSON again:
+
+```go
+entity, err := client.Wikidata().GetEntity(ctx, "Q82425")
+claim, ok := entity.PreferredClaim("P18", false)
+if ok {
+    for _, source := range claim.ReferenceSnaks("P854") { // reference URL
+        fmt.Println(source.ValueString())
+    }
+}
 ```
 
 ## Pagination and bulk downloads

@@ -87,6 +87,36 @@ func TestSnakTypedValues(t *testing.T) {
 	}
 }
 
+func TestStatementHelpersRespectRankQualifiersAndReferences(t *testing.T) {
+	stringSnak := func(value string) Snak {
+		raw, _ := json.Marshal(value)
+		return Snak{SnakType: "value", DataValue: DataValue{Value: raw}}
+	}
+	normal := Claim{
+		Rank: "normal", MainSnak: Snak{SnakType: "value"},
+		Qualifiers: map[string][]Snak{"P580": {stringSnak("2000")}},
+		References: []Reference{{Snaks: map[string][]Snak{"P854": {stringSnak("https://example.test")}}}},
+	}
+	entity := Entity{Claims: map[string][]Claim{"P123": {
+		normal,
+		{Rank: "preferred", MainSnak: Snak{SnakType: "value"}},
+		{Rank: "deprecated", MainSnak: Snak{SnakType: "value"}},
+	}}}
+	claims := entity.ClaimsByRank("p123", false)
+	if len(claims) != 2 || claims[0].Rank != "preferred" || claims[1].Rank != "normal" {
+		t.Fatalf("claims=%+v", claims)
+	}
+	best, ok := entity.PreferredClaim("P123", false)
+	if !ok || best.Rank != "preferred" {
+		t.Fatalf("best=%+v ok=%v", best, ok)
+	}
+	qualifiers := claims[1].QualifierSnaks("p580")
+	references := claims[1].ReferenceSnaks("P854")
+	if len(qualifiers) != 1 || len(references) != 1 || qualifiers[0].ValueString() != "2000" || references[0].ValueString() != "https://example.test" {
+		t.Fatalf("qualifiers=%+v references=%+v", qualifiers, references)
+	}
+}
+
 func TestGetEntityTrimsIDAndPreservesRedirectInformation(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if got := r.URL.Query().Get("ids"); got != "Q4" {

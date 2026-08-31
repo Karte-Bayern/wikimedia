@@ -45,3 +45,19 @@ func TestResultTypedAccessors(t *testing.T) {
 		t.Fatalf("address=%+v", address)
 	}
 }
+
+func TestPreferredStringValueUsesWikidataRank(t *testing.T) {
+	stringClaim := func(rank, value string) wikidata.Claim {
+		raw, _ := json.Marshal(value)
+		return wikidata.Claim{Rank: rank, MainSnak: wikidata.Snak{SnakType: "value", DataValue: wikidata.DataValue{Value: raw}}}
+	}
+	result := &Result{Claims: map[string][]wikidata.Claim{"P8629": {
+		stringClaim("normal", "normal"), stringClaim("preferred", "preferred"), stringClaim("deprecated", "deprecated"),
+	}}}
+	if got := result.PreferredStringValue("P8629"); got != "preferred" {
+		t.Fatalf("value=%q", got)
+	}
+	if got := result.OpeningHours(); got != "preferred" {
+		t.Fatalf("opening hours=%q", got)
+	}
+}
